@@ -829,7 +829,7 @@ function App() {
                 <div style={{fontSize:"18px",fontWeight:"700"}}>Overview</div>
                 <div style={{fontSize:"12px",color:C.muted}}>{now.toLocaleString("en-US",{month:"long",year:"numeric"})}</div>
               </div>
-              <button style={{...S.btn,flex:"none",padding:"10px 20px",fontSize:"13px",background:C.orange}} onClick={()=>setQuickNew(true)}>+ New</button>
+              {!isMobile&&<button style={{...S.btn,flex:"none",padding:"10px 20px",fontSize:"13px",background:C.orange}} onClick={()=>setQuickNew(true)}>+ New</button>}
             </div>
 
             {/* -- KPI cards -- 2x2 grid, this month + YTD -- */}
