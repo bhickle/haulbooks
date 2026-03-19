@@ -378,8 +378,8 @@ function App() {
 
   const saveFlip=async()=>{
     if(!flipForm.name)return;
-    if(editingId){const updated={...flips.find(f=>f.id===editingId),...flipForm,purchasePrice:parseFloat(flipForm.purchasePrice)||0,arv:parseFloat(flipForm.arv)||0,salePrice:parseFloat(flipForm.salePrice)||null,saleDate:flipForm.saleDate||null};setFlips(p=>p.map(f=>f.id===editingId?updated:f));}
-    else{const id="flip_"+Date.now();const rec={...flipForm,id,purchasePrice:parseFloat(flipForm.purchasePrice)||0,arv:parseFloat(flipForm.arv)||0,salePrice:null,saleDate:null,milestones:[{id:"m_"+Date.now(),label:"Purchased",done:false,date:""}]};setFlips(p=>[...p,rec]);}
+    if(editingId){const updated={...flips.find(f=>f.id===editingId),...flipForm,purchasePrice:parseFloat(flipForm.purchasePrice)||0,arv:parseFloat(flipForm.arv)||0,salePrice:parseFloat(flipForm.salePrice)||null,saleDate:flipForm.saleDate||null};try{await sb.upsert("flips",fromFlip(updated));}catch(e){console.error(e);}setFlips(p=>p.map(f=>f.id===editingId?updated:f));}
+    else{const id="flip_"+Date.now();const rec={...flipForm,id,purchasePrice:parseFloat(flipForm.purchasePrice)||0,arv:parseFloat(flipForm.arv)||0,salePrice:null,saleDate:null,milestones:[{id:"m_"+Date.now(),label:"Purchased",done:false,date:""}]};try{await sb.upsert("flips",fromFlip(rec));}catch(e){console.error(e);}setFlips(p=>[...p,rec]);}
     setFlipForm(blankFlip);setEditingId(null);setModal(null);
   };
   const saveContractor=async()=>{
