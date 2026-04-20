@@ -156,7 +156,7 @@ const SEED_VENDORS = ["Branch Construction","Sheetz","Westmoreland Sanitary Land
 
 // -- Supabase client --------------------------------------------------------
 const SURL = "https://nsouvldpkpsnmpharxzh.supabase.co";
-const SKEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5zb3V2bGRwa3Bzbm1waGFyeHpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NTA0MTAsImV4cCI6MjA4OTQyNjQxMH0.FWKv_CFE8OUvG9EH5iAWttLMiFgJKLtyZLqYjFG8ve8";
+const SKEY = "sb_publishable_b5vR9BCL10LVflqsq6jlVg_0q0sNkFG";
 const sbFetch = async (path, opts={}) => {
   const r = await fetch(SURL + "/rest/v1/" + path, {
     ...opts,
@@ -192,13 +192,53 @@ const toContractor = r => ({id:r.id,flipId:r.flip_id,name:r.name,trade:r.trade||
 const fromContractor = c => ({id:c.id,flip_id:c.flipId,name:c.name,trade:c.trade||null,payment_type:c.paymentType,day_rate:c.dayRate||null,total_bid:c.totalBid||null,total_paid:c.totalPaid||0,status:c.status||"active",phone:c.phone||null,notes:c.notes||null});
 const toProp = r => ({id:r.id,address:r.address,city:r.city||"",color:r.color||"#3fb950",monthlyRent:parseFloat(r.monthly_rent||0),status:r.status||"active"});
 const fromProp = p => ({id:p.id,address:p.address,city:p.city||null,color:p.color,monthly_rent:p.monthlyRent,status:p.status});
+const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||""});
+const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null});
 
+
+// -- VendorInput (defined outside App so React doesn't remount on every render) --
+const VendorInput = ({value, onChange, placeholder="e.g. Sheetz, Lowe's", vendors, addVendor}) => {
+  const [query, setQuery] = useState(value||"");
+  const [open, setOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(0);
+  useEffect(()=>{ setQuery(value||""); },[value]);
+  const matches = query.length>0 ? vendors.filter(v=>v.toLowerCase().includes(query.toLowerCase())).slice(0,8) : vendors.slice(0,8);
+  const showAddNew = query.trim().length>0 && !vendors.find(v=>v.toLowerCase()===query.trim().toLowerCase());
+  const select=(name)=>{const added=addVendor(name);setQuery(added);onChange(added);setOpen(false);};
+  const handleKey=(e)=>{
+    const total=matches.length+(showAddNew?1:0);
+    if(e.key==="ArrowDown"){e.preventDefault();setHighlightIdx(i=>Math.min(i+1,total-1));}
+    else if(e.key==="ArrowUp"){e.preventDefault();setHighlightIdx(i=>Math.max(i-1,0));}
+    else if(e.key==="Enter"){e.preventDefault();if(highlightIdx<matches.length)select(matches[highlightIdx]);else if(showAddNew)select(query.trim());}
+    else if(e.key==="Escape"){setOpen(false);}
+  };
+  const inpStyle={width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:"8px",color:C.text,padding:"9px 12px",fontSize:"14px",boxSizing:"border-box",fontFamily:"inherit",transition:"border-color 0.15s"};
+  return (
+    <div style={{position:"relative"}}>
+      <input style={inpStyle} placeholder={placeholder} value={query} autoComplete="off"
+        onChange={e=>{setQuery(e.target.value);onChange(e.target.value);setOpen(true);setHighlightIdx(0);}}
+        onFocus={()=>setOpen(true)} onBlur={()=>setTimeout(()=>setOpen(false),150)} onKeyDown={handleKey}/>
+      {open&&(matches.length>0||showAddNew)&&(
+        <div style={{position:"absolute",top:"100%",left:0,right:0,background:C.surface,border:`1px solid ${C.border}`,borderRadius:"7px",zIndex:300,maxHeight:"200px",overflowY:"auto",marginTop:"2px",boxShadow:"0 4px 16px rgba(0,0,0,0.4)"}}>
+          {matches.map((v,i)=>(
+            <div key={v} onMouseDown={()=>select(v)} style={{padding:"8px 12px",cursor:"pointer",background:i===highlightIdx?C.faint:"transparent",fontSize:"13px",borderBottom:`1px solid ${C.faint}`}}>{v}</div>
+          ))}
+          {showAddNew&&(
+            <div onMouseDown={()=>select(query.trim())} style={{padding:"8px 12px",cursor:"pointer",background:highlightIdx===matches.length?C.faint:"transparent",fontSize:"13px",color:C.teal,borderTop:matches.length>0?`1px solid ${C.border}`:"none",display:"flex",alignItems:"center",gap:"6px"}}>
+              <span style={{fontWeight:"700"}}>+</span> Add "{query.trim()}"
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 function App() {
   // -- Top-level view: dashboard | hauling | flips | rentals | reports | settings
   const [view, setView] = useState("dashboard");
   // -- Sub-tabs per module
-  const [haulingTab, setHaulingTab] = useState("jobs");       // jobs | expenses | mileage | assets
+  const [haulingTab, setHaulingTab] = useState("jobs");       // jobs | leads | scheduled | expenses | mileage | assets
   const [propDetailTab, setPropDetailTab] = useState("payments"); // payments | expenses | summary
   const [flipTab, setFlipTab] = useState("list");             // list | detail
   const [rentalTab, setRentalTab] = useState("portfolio");    // portfolio | detail
@@ -215,6 +255,9 @@ function App() {
   const [trips, setTrips] = useState([]);
   const [rentalProperties, setRentalProperties] = useState([]);
   const [vendors, setVendors] = useState([]);
+  const [leads, setLeads] = useState([]);
+  const [leadForm, setLeadForm] = useState({date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:""});
+  const blankLead = {date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:""};
   const addVendor=(name)=>{const n=name.trim();if(n&&!vendors.includes(n)){setVendors(p=>[n,...p].sort((a,b)=>a.localeCompare(b)));sb.upsert("vendors",{name:n}).catch(e=>console.error(e));}return n;};
 
   // -- Selection state
@@ -299,7 +342,7 @@ function App() {
     const load = async () => {
       try {
         const safe = (p) => p.catch(()=>[]);
-        const [expRows,incRows,assetRows,tripRows,flipRows,conRows,propRows,vendorRows] = await Promise.all([
+        const [expRows,incRows,assetRows,tripRows,flipRows,conRows,propRows,vendorRows,leadRows] = await Promise.all([
           safe(sb.select("expenses","order=date.desc")),
           safe(sb.select("income","order=date.desc")),
           safe(sb.select("assets","order=date.desc")),
@@ -308,6 +351,7 @@ function App() {
           safe(sb.select("contractors","order=created_at.asc")),
           safe(sb.select("rental_properties","order=created_at.asc")),
           safe(sb.select("vendors","order=name.asc")),
+          safe(sb.select("leads","order=date.desc")),
         ]);
         setExpenses(expRows.map(toExpense));
         setIncome(incRows.map(toIncome));
@@ -317,6 +361,7 @@ function App() {
         setContractors(conRows.map(toContractor));
         setRentalProperties(propRows.map(toProp));
         setVendors(vendorRows.map(r=>r.name));
+        setLeads(leadRows.map(toLead));
       } catch(err) {
         setDbError(err.message);
       } finally {
@@ -449,6 +494,27 @@ function App() {
   const startEditAsset=(a)=>{setEditingId(a.id);setAssetForm({date:a.date,name:a.name,vendor:a.vendor||"",cost:String(a.cost),notes:a.notes||""});setModal("asset");};
   const startEditTrip=(t)=>{setEditingId(t.id);setTripForm({date:t.date,desc:t.desc,startOdometer:t.startOdometer||"",endOdometer:t.endOdometer||"",miles:String(t.miles),purpose:t.purpose||"Business",notes:t.notes||""});setModal("trip");};
 
+  // -- LEADS CRUD --
+  const saveLead=async()=>{
+    if(!leadForm.customer)return;
+    const id=editingId||"lead_"+Date.now();
+    const rec={...leadForm,id,estimatedAmount:leadForm.estimatedAmount?parseFloat(leadForm.estimatedAmount):null};
+    try{await sb.upsert("leads",fromLead(rec));}catch(e){console.error(e);}
+    if(editingId){setLeads(p=>p.map(l=>l.id===editingId?rec:l));}else{setLeads(p=>[rec,...p]);}
+    setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal(null);
+  };
+  const deleteLead=async(id)=>{try{await sb.remove("leads",id);}catch(e){console.error(e);}setLeads(p=>p.filter(l=>l.id!==id));};
+  const startEditLead=(l)=>{setEditingId(l.id);setLeadForm({date:l.date,customer:l.customer,phone:l.phone||"",address:l.address||"",jobType:l.jobType||"",estimatedAmount:l.estimatedAmount?String(l.estimatedAmount):"",status:l.status||"new",notes:l.notes||"",scheduledDate:l.scheduledDate||""});setModal("lead");};
+  const convertLeadToJob=async(lead)=>{
+    if(!window.confirm(`Convert "${lead.customer}" to a completed job?`))return;
+    const jobRec={id:"job_"+Date.now(),date:lead.scheduledDate||lead.date,customer:lead.customer,phone:lead.phone||"",address:lead.address||"",jobType:lead.jobType||"Junk Removal",amount:lead.estimatedAmount||0,paymentMethod:"Cash",notes:(lead.notes||"")+" [Converted from lead]",propertyId:null,flipId:null};
+    try{await sb.upsert("income",fromIncome(jobRec));}catch(e){console.error(e);}
+    setIncome(p=>[jobRec,...p]);
+    const updated={...lead,status:"complete"};
+    try{await sb.upsert("leads",fromLead(updated));}catch(e){console.error(e);}
+    setLeads(p=>p.map(l=>l.id===lead.id?updated:l));
+  };
+
   const resetSplit=()=>{setExpSplit(false);setSplitItems([{flipId:"",amount:"",category:"Materials / Supplies",desc:""},{flipId:"",amount:"",category:"Materials / Supplies",desc:""}]);};
   const saveExpense=async()=>{
     if(expSplit){
@@ -554,42 +620,6 @@ function App() {
     st:(a)=>({padding:"10px 18px",border:"none",borderBottom:a?`2px solid ${C.orange}`:"2px solid transparent",background:"transparent",color:a?C.orange:C.muted,cursor:"pointer",fontSize:"12px",fontWeight:"700",letterSpacing:"0.5px",textTransform:"uppercase",transition:"all 0.15s",marginBottom:"-1px"}),
   };
 
-  // -- VendorInput ------------------------------------------------------------
-  const VendorInput = ({value, onChange, placeholder="e.g. Sheetz, Lowe's"}) => {
-    const [query, setQuery] = useState(value||"");
-    const [open, setOpen] = useState(false);
-    const [highlightIdx, setHighlightIdx] = useState(0);
-    useEffect(()=>{ setQuery(value||""); },[value]);
-    const matches = query.length>0 ? vendors.filter(v=>v.toLowerCase().includes(query.toLowerCase())).slice(0,8) : vendors.slice(0,8);
-    const showAddNew = query.trim().length>0 && !vendors.find(v=>v.toLowerCase()===query.trim().toLowerCase());
-    const select=(name)=>{const added=addVendor(name);setQuery(added);onChange(added);setOpen(false);};
-    const handleKey=(e)=>{
-      const total=matches.length+(showAddNew?1:0);
-      if(e.key==="ArrowDown"){e.preventDefault();setHighlightIdx(i=>Math.min(i+1,total-1));}
-      else if(e.key==="ArrowUp"){e.preventDefault();setHighlightIdx(i=>Math.max(i-1,0));}
-      else if(e.key==="Enter"){e.preventDefault();if(highlightIdx<matches.length)select(matches[highlightIdx]);else if(showAddNew)select(query.trim());}
-      else if(e.key==="Escape"){setOpen(false);}
-    };
-    return (
-      <div style={{position:"relative"}}>
-        <input style={S.inp} placeholder={placeholder} value={query} autoComplete="off"
-          onChange={e=>{setQuery(e.target.value);onChange(e.target.value);setOpen(true);setHighlightIdx(0);}}
-          onFocus={()=>setOpen(true)} onBlur={()=>setTimeout(()=>setOpen(false),150)} onKeyDown={handleKey}/>
-        {open&&(matches.length>0||showAddNew)&&(
-          <div style={{position:"absolute",top:"100%",left:0,right:0,background:C.surface,border:`1px solid ${C.border}`,borderRadius:"7px",zIndex:300,maxHeight:"200px",overflowY:"auto",marginTop:"2px",boxShadow:"0 4px 16px rgba(0,0,0,0.4)"}}>
-            {matches.map((v,i)=>(
-              <div key={v} onMouseDown={()=>select(v)} style={{padding:"8px 12px",cursor:"pointer",background:i===highlightIdx?C.faint:"transparent",fontSize:"13px",borderBottom:`1px solid ${C.faint}`}}>{v}</div>
-            ))}
-            {showAddNew&&(
-              <div onMouseDown={()=>select(query.trim())} style={{padding:"8px 12px",cursor:"pointer",background:highlightIdx===matches.length?C.faint:"transparent",fontSize:"13px",color:C.teal,borderTop:matches.length>0?`1px solid ${C.border}`:"none",display:"flex",alignItems:"center",gap:"6px"}}>
-                <span style={{fontWeight:"700"}}>+</span> Add "{query.trim()}"
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
 
   // -- DateFilter -------------------------------------------------------------
   const DateFilter = ({f, setF}) => {
@@ -915,6 +945,40 @@ function App() {
               </div>
             </>)}
 
+            {/* -- Upcoming Jobs -- */}
+            {(()=>{
+              const today2=tod();
+              const upcomingJobs=leads.filter(l=>l.scheduledDate&&l.scheduledDate>=today2&&!["lost","complete"].includes(l.status)).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate)).slice(0,5);
+              if(!upcomingJobs.length)return null;
+              return <>
+                <div style={{...S.sh,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span>📅 Upcoming Jobs</span>
+                  <button style={{background:"none",border:"none",color:C.blue,fontSize:"11px",cursor:"pointer"}} onClick={()=>{setView("hauling");setHaulingTab("scheduled");}}>View all →</button>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+                  {upcomingJobs.map(l=>{
+                    const d=new Date(l.scheduledDate),n=new Date(today2);
+                    const daysAway=Math.ceil((d-n)/(1000*60*60*24));
+                    return (
+                      <div key={l.id} style={{...S.card,padding:"12px",cursor:"pointer",borderLeft:`3px solid ${daysAway===0?C.orange:daysAway<=2?C.yellow:C.blue}`}} onClick={()=>{setView("hauling");setHaulingTab("scheduled");}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div>
+                            <span style={{fontWeight:"700",fontSize:"13px"}}>{l.customer}</span>
+                            {l.address&&<span style={{fontSize:"11px",color:C.muted,marginLeft:"8px"}}>{l.address}</span>}
+                          </div>
+                          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+                            {l.estimatedAmount&&<span style={{fontWeight:"700",color:C.teal,fontSize:"12px"}}>{fmt(l.estimatedAmount)}</span>}
+                            <span style={S.badge(daysAway===0?C.orange:daysAway<=2?C.yellow:C.blue)}>{daysAway===0?"Today":daysAway===1?"Tomorrow":fmtDate(l.scheduledDate)}</span>
+                          </div>
+                        </div>
+                        {l.jobType&&<div style={{fontSize:"11px",color:C.muted,marginTop:"3px"}}>{l.jobType}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>;
+            })()}
+
             {/* -- Recent Activity feed -- */}
             <div style={S.sh}>Recent Activity</div>
             <div style={S.card}>
@@ -944,17 +1008,163 @@ function App() {
             {/* Sub-nav */}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0"}}>
               <div style={S.subNav}>
-                {[["jobs","Jobs"],["expenses","Expenses"],["mileage","Mileage"],["assets","Assets"]].map(([t,l])=>(
+                {[["jobs","Jobs"],["leads","Leads"],["scheduled","Scheduled"],["expenses","Expenses"],["mileage","Mileage"],["assets","Assets"]].map(([t,l])=>(
                   <button key={t} style={S.sn(haulingTab===t)} onClick={()=>{setHaulingTab(t);setExpSearch("");setExpFilterPayee("");setExpFilterCat("");}}>{l}</button>
                 ))}
               </div>
               {!isMobile&&<div style={{display:"flex",gap:"6px",marginBottom:"1px"}}>
                 {haulingTab==="jobs"&&<button style={{...S.btn,flex:"none",background:C.orange,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setJobForm(blankJob);setEditingId(null);setModal("job");}}>+ Log Job</button>}
+                {haulingTab==="leads"&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
+                {haulingTab==="scheduled"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
                 {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
                 {haulingTab==="mileage"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Trip</button>}
                 {haulingTab==="assets"&&<button style={{...S.btn,flex:"none",background:C.yellow,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setAssetForm(blankAsset);setEditingId(null);setModal("asset");}}>+ Add Asset</button>}
               </div>}
             </div>
+
+            {/* -- LEADS TAB -- */}
+            {haulingTab==="leads"&&(()=>{
+              const LEAD_STATUSES=[["new","New",C.blue],["estimate_sent","Estimate Sent",C.yellow],["won","Won",C.teal],["lost","Lost",C.red],["complete","Complete",C.muted]];
+              const getLeadCol=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[2]||C.muted;
+              const getLeadLabel=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[1]||s;
+              const openLeads=leads.filter(l=>!["lost","complete"].includes(l.status));
+              const closedLeads=leads.filter(l=>["lost","complete"].includes(l.status));
+              const totalEstimated=openLeads.reduce((s,l)=>s+(l.estimatedAmount||0),0);
+              const wonLeads=leads.filter(l=>l.status==="won");
+              const convRate=leads.filter(l=>l.status!=="new"&&l.status!=="estimate_sent").length>0?Math.round((wonLeads.length/leads.filter(l=>["won","lost"].includes(l.status)).length)*100):null;
+              return <>
+                <div style={{marginBottom:"16px",display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
+                  {isMobile&&<button style={{...S.btn,background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
+                </div>
+                <div style={S.g3}>
+                  {[[`${openLeads.length} Open`,openLeads.length+" leads",C.blue],[`Pipeline Value`,fmt(totalEstimated),C.teal],[`Win Rate`,convRate!==null?convRate+"%":"--",C.orange]].map(([l,v,col])=>(
+                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
+                  ))}
+                </div>
+                <div style={{marginTop:"16px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                  {openLeads.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No open leads. Add your first one!</div>}
+                  {openLeads.map(l=>(
+                    <div key={l.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${getLeadCol(l.status)}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
+                          {l.address&&<div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>📍 {l.address}</div>}
+                          {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                          <div style={{display:"flex",gap:"6px",marginTop:"6px",flexWrap:"wrap",alignItems:"center"}}>
+                            <span style={S.badge(getLeadCol(l.status))}>{getLeadLabel(l.status)}</span>
+                            {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
+                            <span style={{fontSize:"11px",color:C.muted}}>{fmtDate(l.date)}</span>
+                          </div>
+                          {l.notes&&<div style={{fontSize:"11px",color:C.muted,marginTop:"4px",fontStyle:"italic"}}>{l.notes}</div>}
+                        </div>
+                        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}}>
+                          {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal,fontSize:"15px"}}>{fmt(l.estimatedAmount)}</div>}
+                          <div style={{display:"flex",gap:"4px"}}>
+                            <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>Edit</button>
+                            <button onClick={()=>deleteLead(l.id)} style={S.xBtn}>×</button>
+                          </div>
+                          {l.status==="won"&&<button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 8px",fontSize:"10px"}}>→ Complete Job</button>}
+                          {l.status!=="won"&&l.status!=="scheduled"&&<select value={l.status} onChange={async(e)=>{const updated={...l,status:e.target.value};try{await sb.upsert("leads",fromLead(updated));}catch(ex){console.error(ex);}setLeads(p=>p.map(x=>x.id===l.id?updated:x));}} style={{fontSize:"10px",background:C.surfaceHigh,border:`1px solid ${C.border}`,borderRadius:"6px",color:C.text,padding:"3px 6px"}}>
+                            {LEAD_STATUSES.filter(s=>s[0]!=="complete").map(([v,lab])=><option key={v} value={v}>{lab}</option>)}
+                          </select>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {closedLeads.length>0&&<>
+                    <div style={{...S.sl,marginTop:"8px"}}>CLOSED</div>
+                    {closedLeads.map(l=>(
+                      <div key={l.id} style={{...S.card,padding:"12px",opacity:0.6,borderLeft:`3px solid ${getLeadCol(l.status)}`}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                          <div>
+                            <span style={{fontWeight:"600",fontSize:"13px"}}>{l.customer}</span>
+                            {l.address&&<span style={{fontSize:"11px",color:C.muted,marginLeft:"8px"}}>{l.address}</span>}
+                          </div>
+                          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+                            <span style={S.badge(getLeadCol(l.status))}>{getLeadLabel(l.status)}</span>
+                            {l.estimatedAmount&&<span style={{fontSize:"12px",color:C.muted}}>{fmt(l.estimatedAmount)}</span>}
+                            <button onClick={()=>deleteLead(l.id)} style={S.xBtn}>×</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>}
+                </div>
+              </>;
+            })()}
+
+            {/* -- SCHEDULED TAB -- */}
+            {haulingTab==="scheduled"&&(()=>{
+              const scheduled=leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status)).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate));
+              const today2=tod();
+              const upcoming=scheduled.filter(l=>l.scheduledDate>=today2);
+              const past=scheduled.filter(l=>l.scheduledDate<today2);
+              return <>
+                <div style={{marginBottom:"16px"}}>
+                  {isMobile&&<button style={{...S.btn,background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
+                </div>
+                <div style={S.g3}>
+                  {[[`${upcoming.length} Upcoming`,"jobs",C.blue],[`${past.length} Overdue`,past.length>0?"needs action":"all good",past.length>0?C.red:C.teal],[`This Week`,upcoming.filter(l=>{const d=new Date(l.scheduledDate),n=new Date(today2);return (d-n)/(1000*60*60*24)<=7;}).length+" jobs",C.orange]].map(([l,v,col])=>(
+                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
+                  ))}
+                </div>
+                <div style={{marginTop:"16px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                  {past.length>0&&<>
+                    <div style={{fontSize:"11px",fontWeight:"700",color:C.red,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:"4px"}}>⚠ Past Due</div>
+                    {past.map(l=>(
+                      <div key={l.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${C.red}`}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
+                          <div style={{flex:1}}>
+                            <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
+                            {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
+                            {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                            <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
+                              <span style={S.badge(C.red)}>Was {fmtDate(l.scheduledDate)}</span>
+                              {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
+                            </div>
+                          </div>
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}}>
+                            {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal}}>{fmt(l.estimatedAmount)}</div>}
+                            <button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 10px",fontSize:"11px"}}>→ Mark Complete</button>
+                            <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>Reschedule</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>}
+                  {upcoming.length===0&&past.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No scheduled jobs</div>}
+                  {upcoming.length>0&&<div style={{fontSize:"11px",fontWeight:"700",color:C.blue,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:"4px"}}>Upcoming</div>}
+                  {upcoming.map(l=>{
+                    const d=new Date(l.scheduledDate),n=new Date(today2);
+                    const daysAway=Math.ceil((d-n)/(1000*60*60*24));
+                    return (
+                      <div key={l.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${C.blue}`}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
+                          <div style={{flex:1}}>
+                            <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
+                            {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
+                            {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                            <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
+                              <span style={S.badge(C.blue)}>{fmtDate(l.scheduledDate)}</span>
+                              {daysAway===0&&<span style={S.badge(C.orange)}>TODAY</span>}
+                              {daysAway===1&&<span style={S.badge(C.yellow)}>TOMORROW</span>}
+                              {daysAway>1&&daysAway<=7&&<span style={S.badge(C.yellow)}>in {daysAway}d</span>}
+                              {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
+                            </div>
+                            {l.notes&&<div style={{fontSize:"11px",color:C.muted,marginTop:"4px",fontStyle:"italic"}}>{l.notes}</div>}
+                          </div>
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}}>
+                            {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal}}>{fmt(l.estimatedAmount)}</div>}
+                            <button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 10px",fontSize:"11px"}}>→ Mark Complete</button>
+                            <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>Edit</button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>;
+            })()}
 
             {/* -- JOBS TAB -- */}
             {haulingTab==="jobs"&&(()=>{
@@ -2167,7 +2377,7 @@ function App() {
               </div>
             )}
             <label style={S.lbl}>Payee / Vendor</label>
-            <VendorInput value={expForm.payee} onChange={v=>setExpForm(f=>({...f,payee:v}))}/>
+            <VendorInput value={expForm.payee} onChange={v=>setExpForm(f=>({...f,payee:v}))} vendors={vendors} addVendor={addVendor}/>
             <label style={S.lbl}>Notes</label>
             <input style={S.inp} placeholder="Optional" value={expForm.notes} onChange={e=>setExpForm(f=>({...f,notes:e.target.value}))}/>
             {editingId&&expForm.receiptB64&&<div style={{marginTop:"10px"}}>{expForm.receiptIsPdf?<PdfViewer b64={expForm.receiptB64}/>:<img src={`data:${expForm.receiptMediaType};base64,${expForm.receiptB64}`} alt="Receipt" style={{width:"100%",borderRadius:"6px",maxHeight:"160px",objectFit:"contain",background:"#fff"}}/>}</div>}
@@ -2189,7 +2399,7 @@ function App() {
               <div style={{flex:1}}><label style={S.lbl}>Cost ($) *</label><input type="number" style={S.inp} placeholder="0.00" value={assetForm.cost} onChange={e=>setAssetForm(f=>({...f,cost:e.target.value}))}/></div>
             </div>
             <label style={S.lbl}>Vendor</label>
-            <VendorInput value={assetForm.vendor} onChange={v=>setAssetForm(f=>({...f,vendor:v}))} placeholder="e.g. Davies Ford"/>
+            <VendorInput value={assetForm.vendor} onChange={v=>setAssetForm(f=>({...f,vendor:v}))} placeholder="e.g. Davies Ford" vendors={vendors} addVendor={addVendor}/>
             <label style={S.lbl}>Notes</label>
             <input style={S.inp} placeholder="VIN, Section 179, etc." value={assetForm.notes} onChange={e=>setAssetForm(f=>({...f,notes:e.target.value}))}/>
             <div style={S.br}><button style={{...S.btn,background:C.yellow}} onClick={saveAsset}>{editingId?"Update":"Add Asset"}</button><button style={S.bgh} onClick={()=>{setModal(null);setEditingId(null);setAssetForm(blankAsset);}}>Cancel</button></div>
@@ -2248,7 +2458,7 @@ function App() {
               {flips.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
             <div style={S.row}>
-              <div style={{flex:2}}><label style={S.lbl}>Name / Company *</label><VendorInput value={conForm.name} onChange={v=>setConForm(f=>({...f,name:v}))} placeholder="e.g. Branch Construction"/></div>
+              <div style={{flex:2}}><label style={S.lbl}>Name / Company *</label><VendorInput value={conForm.name} onChange={v=>setConForm(f=>({...f,name:v}))} placeholder="e.g. Branch Construction" vendors={vendors} addVendor={addVendor}/></div>
               <div style={{flex:1}}><label style={S.lbl}>Trade</label><input style={S.inp} placeholder="GC, Plumbing…" value={conForm.trade} onChange={e=>setConForm(f=>({...f,trade:e.target.value}))}/></div>
             </div>
             <label style={S.lbl}>Payment Type</label>
@@ -2364,6 +2574,45 @@ function App() {
         </div>
       )}
 
+      {/* -- LEAD / PIPELINE MODAL -- */}
+      {modal==="lead"&&(
+        <div style={S.modal}>
+          <div style={S.mbox}>
+            <div style={S.mt}>{editingId?"Edit Lead":"Add Lead"}</div>
+            <div style={S.row}>
+              <div style={{flex:1}}><label style={S.lbl}>Date *</label><input type="date" style={S.inp} value={leadForm.date} onChange={e=>setLeadForm(f=>({...f,date:e.target.value}))}/></div>
+              <div style={{flex:2}}><label style={S.lbl}>Customer Name *</label><input style={S.inp} placeholder="e.g. John Smith" value={leadForm.customer} onChange={e=>setLeadForm(f=>({...f,customer:e.target.value}))}/></div>
+            </div>
+            <div style={S.row}>
+              <div style={{flex:1}}><label style={S.lbl}>Phone</label><input style={S.inp} placeholder="(412) 555-0000" value={leadForm.phone} onChange={e=>setLeadForm(f=>({...f,phone:e.target.value}))}/></div>
+              <div style={{flex:2}}><label style={S.lbl}>Address</label><input style={S.inp} placeholder="e.g. 123 Main St, Monessen" value={leadForm.address} onChange={e=>setLeadForm(f=>({...f,address:e.target.value}))}/></div>
+            </div>
+            <div style={S.row}>
+              <div style={{flex:1}}><label style={S.lbl}>Job Type</label>
+                <select style={S.sel} value={leadForm.jobType} onChange={e=>setLeadForm(f=>({...f,jobType:e.target.value}))}>
+                  <option value="">-- Select --</option>
+                  {["Junk Removal","Estate Cleanout","Yard Cleanup","Demolition","Dump Run","Moving Help","Other"].map(t=><option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div style={{flex:1}}><label style={S.lbl}>Est. Amount ($)</label><input type="number" style={S.inp} placeholder="0.00" value={leadForm.estimatedAmount} onChange={e=>setLeadForm(f=>({...f,estimatedAmount:e.target.value}))}/></div>
+            </div>
+            <label style={S.lbl}>Status</label>
+            <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+              {[["new","New",C.blue],["estimate_sent","Estimate Sent",C.yellow],["won","Won",C.teal],["scheduled","Scheduled",C.blue],["lost","Lost",C.red]].map(([v,lab,col])=>(
+                <button key={v} style={{...S.tb(leadForm.status===v,col),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setLeadForm(f=>({...f,status:v}))}>{lab}</button>
+              ))}
+            </div>
+            {(leadForm.status==="won"||leadForm.status==="scheduled")&&<>
+              <label style={S.lbl}>Scheduled Date</label>
+              <input type="date" style={S.inp} value={leadForm.scheduledDate} onChange={e=>setLeadForm(f=>({...f,scheduledDate:e.target.value}))}/>
+            </>}
+            <label style={S.lbl}>Notes</label>
+            <input style={S.inp} placeholder="Details about the job..." value={leadForm.notes} onChange={e=>setLeadForm(f=>({...f,notes:e.target.value}))}/>
+            <div style={S.br}><button style={S.btn} onClick={saveLead}>{editingId?"Update":"Save Lead"}</button><button style={S.bgh} onClick={()=>{setModal(null);setEditingId(null);setLeadForm(blankLead);}}>Cancel</button></div>
+          </div>
+        </div>
+      )}
+
       {/* -- RENT PAYMENT MODAL -- */}
       {modal==="rentInc"&&(
         <div style={S.modal}>
@@ -2418,7 +2667,7 @@ function App() {
             <label style={S.lbl}>Description</label>
             <input style={S.inp} placeholder="e.g. Furnace repair" value={rentExpForm.desc} onChange={e=>setRentExpForm(f=>({...f,desc:e.target.value}))}/>
             <label style={S.lbl}>Vendor</label>
-            <VendorInput value={rentExpForm.vendor} onChange={v=>setRentExpForm(f=>({...f,vendor:v}))} placeholder="e.g. Fitch Plumbing"/>
+            <VendorInput value={rentExpForm.vendor} onChange={v=>setRentExpForm(f=>({...f,vendor:v}))} placeholder="e.g. Fitch Plumbing" vendors={vendors} addVendor={addVendor}/>
             <label style={S.lbl}>Category</label>
             <select style={S.sel} value={rentExpForm.category} onChange={e=>setRentExpForm(f=>({...f,category:e.target.value}))}>
               {["Insurance","Repairs & Maintenance","Taxes","Mortgages & Loans","Utilities","Management Fees","Other"].map(c=><option key={c}>{c}</option>)}
