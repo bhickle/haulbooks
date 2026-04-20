@@ -499,7 +499,7 @@ function App() {
     if(!leadForm.customer)return;
     const id=editingId||"lead_"+Date.now();
     const rec={...leadForm,id,estimatedAmount:leadForm.estimatedAmount?parseFloat(leadForm.estimatedAmount):null};
-    try{await sb.upsert("leads",fromLead(rec));}catch(e){console.error("Lead save error:",e);alert("Save failed: "+e.message);return;}
+    try{const payload=fromLead(rec);console.log("Saving lead payload:",JSON.stringify(payload));const result=await sb.upsert("leads",payload);console.log("Lead save result:",JSON.stringify(result));}catch(e){console.error("Lead save error:",e);alert("Save failed: "+e.message);return;}
     if(editingId){setLeads(p=>p.map(l=>l.id===editingId?rec:l));}else{setLeads(p=>[rec,...p]);}
     setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal(null);
   };
