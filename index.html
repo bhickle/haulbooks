@@ -298,24 +298,14 @@ function App() {
   useEffect(()=>{
     const load = async () => {
       try {
-        const [expRows,incRows,assetRows,tripRows,flipRows,conRows,propRows,vendorRows] = await Promise.all([
-          sb.select("expenses","order=date.desc"),
-          sb.select("income","order=date.desc"),
-          sb.select("assets","order=date.desc"),
-          sb.select("trips","order=date.desc"),
-          sb.select("flips","order=created_at.asc"),
-          sb.select("contractors","order=created_at.asc"),
-          sb.select("rental_properties","order=created_at.asc"),
-          sb.select("vendors","order=name.asc"),
-        ]);
-        setExpenses(expRows.map(toExpense));
-        setIncome(incRows.map(toIncome));
-        setAssets(assetRows.map(toAsset));
-        setTrips(tripRows.map(toTrip));
-        setFlips(flipRows.map(toFlip));
-        setContractors(conRows.map(toContractor));
-        setRentalProperties(propRows.map(toProp));
-        setVendors(vendorRows.map(r=>r.name));
+        const expRows = await sb.select("expenses","order=date.desc"); setExpenses(expRows.map(toExpense));
+        const incRows = await sb.select("income","order=date.desc"); setIncome(incRows.map(toIncome));
+        const flipRows = await sb.select("flips","order=created_at.asc"); setFlips(flipRows.map(toFlip));
+        const propRows = await sb.select("rental_properties","order=created_at.asc"); setRentalProperties(propRows.map(toProp));
+        const conRows = await sb.select("contractors","order=created_at.asc"); setContractors(conRows.map(toContractor));
+        const tripRows = await sb.select("trips","order=date.desc"); setTrips(tripRows.map(toTrip));
+        const assetRows = await sb.select("assets","order=date.desc"); setAssets(assetRows.map(toAsset));
+        const vendorRows = await sb.select("vendors","order=name.asc"); setVendors(vendorRows.map(r=>r.name));
       } catch(err) {
         setDbError(err.message);
       } finally {
