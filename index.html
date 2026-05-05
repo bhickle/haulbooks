@@ -269,6 +269,15 @@ function App() {
   const [expModalContext, setExpModalContext] = useState(null); // null | "hauling" | {type:"flip",flipId} | {type:"rental",propId}
   const [payModal, setPayModal] = useState(null);
   const [viewingExpense, setViewingExpense] = useState(null);
+  const openViewExpense = async (e) => {
+    setViewingExpense(e); setModal("viewExpense");
+    if(e.receiptFileName && !e.receiptB64){
+      try{
+        const rows=await sb.select("expenses",`select=id,receipt_b64,receipt_media_type,receipt_is_pdf&id=eq.${e.id}`);
+        if(rows[0]?.receipt_b64){const full={...e,receiptB64:rows[0].receipt_b64,receiptMediaType:rows[0].receipt_media_type,receiptIsPdf:rows[0].receipt_is_pdf||false};setViewingExpense(full);setExpenses(p=>p.map(x=>x.id===e.id?full:x));}
+      }catch(err){console.error(err);}
+    }
+  };
   const [viewingJob, setViewingJob] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [routingRules, setRoutingRules] = useState(DEFAULT_RULES_INIT);
@@ -343,7 +352,7 @@ function App() {
       try {
         const safe = (p) => p.catch(()=>[]);
         const [expRows,incRows,assetRows,tripRows,flipRows,conRows,propRows,vendorRows,leadRows] = await Promise.all([
-          safe(sb.select("expenses","order=date.desc")),
+          safe(sb.select("expenses","select=id,date,description,category,type,flip_id,property_id,amount,payee,notes,receipt_media_type,receipt_is_pdf,receipt_file_name&order=date.desc")),
           safe(sb.select("income","order=date.desc")),
           safe(sb.select("assets","order=date.desc")),
           safe(sb.select("trips","order=date.desc")),
@@ -499,7 +508,7 @@ function App() {
     if(!leadForm.customer)return;
     const id=editingId||"lead_"+Date.now();
     const rec={...leadForm,id,estimatedAmount:leadForm.estimatedAmount?parseFloat(leadForm.estimatedAmount):null};
-    try{const payload=fromLead(rec);console.log("Saving lead payload:",JSON.stringify(payload));const result=await sb.upsert("leads",payload);console.log("Lead save result:",JSON.stringify(result));}catch(e){console.error("Lead save error:",e);alert("Save failed: "+e.message);return;}
+    try{await sb.upsert("leads",fromLead(rec));}catch(e){console.error(e);return;}
     if(editingId){setLeads(p=>p.map(l=>l.id===editingId?rec:l));}else{setLeads(p=>[rec,...p]);}
     setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal(null);
   };
@@ -760,7 +769,7 @@ function App() {
         </div>
         {fExp.length===0?<div style={{...S.card,color:C.muted,textAlign:"center",padding:"24px",fontSize:"13px"}}>No expenses match filters</div>:(
           <div style={S.card}><table style={S.tbl}><thead><tr>{["Date","Description","Category","Payee","Amount",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
-            {fExp.map(e=>(<tr key={e.id} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}} style={{cursor:"pointer"}}>
+            {fExp.map(e=>(<tr key={e.id} onClick={()=>{openViewExpense(e);}} style={{cursor:"pointer"}}>
               <td style={{...S.td,color:C.muted,whiteSpace:"nowrap",fontSize:"11px"}}>{fmtDate(e.date)}</td>
               <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"6px"}}>{e.receiptB64&&<span>🧾</span>}<div>{e.desc}</div></div></td>
               <td style={S.td}><span style={S.badge(flip.color)}>{e.category}</span></td>
@@ -985,7 +994,7 @@ function App() {
               {allRecent.length===0&&<div style={{textAlign:"center",color:C.muted,padding:"24px",fontSize:"13px"}}>No activity yet</div>}
               {allRecent.map((r,i)=>(
                 <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<allRecent.length-1?`1px solid ${C.faint}`:"none",cursor:"pointer"}}
-                  onClick={()=>{if(r._type==="job"){setViewingJob(r);setModal("viewJob");}else if(r._type==="rent-inc"){startEditRentInc(r);}else{setViewingExpense(r);setModal("viewExpense");}}}>
+                  onClick={()=>{if(r._type==="job"){setViewingJob(r);setModal("viewJob");}else if(r._type==="rent-inc"){startEditRentInc(r);}else{openViewExpense(r);}}}>
                   <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
                     <div style={{width:"6px",height:"6px",borderRadius:"50%",background:r._col,flexShrink:0,marginTop:"1px"}}/>
                     <div>
@@ -1250,7 +1259,7 @@ function App() {
                   <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
                     {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No expenses in this period</div>}
                     {filtered.map(e=>(
-                      <div key={e.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${C.red}`}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                      <div key={e.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${C.red}`}} onClick={()=>{openViewExpense(e);}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
@@ -1272,7 +1281,7 @@ function App() {
                   <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Description","Category","Payee","Amount",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
                     {filtered.length===0&&<tr><td colSpan={6} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No expenses in this period</td></tr>}
                     {filtered.map(e=>(
-                      <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                      <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{openViewExpense(e);}}>
                         <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
                         <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                         <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
@@ -2052,7 +2061,7 @@ function App() {
                         const typeCol=e.type==="business"?C.orange:e.type==="flip"?C.teal:C.purple;
                         const typeLabel=e.type==="business"?"Hauling":e.type==="flip"?(flip?.name||"Flip"):e.type==="rental"?(prop?.address||"Rental"):"";
                         return(
-                          <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                          <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{openViewExpense(e);}}>
                             <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
                             <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                             <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
@@ -2760,7 +2769,7 @@ function App() {
                       const typeCol=e.type==="business"?C.orange:e.type==="flip"?C.teal:C.purple;
                       return(
                         <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:`1px solid ${C.faint}`,cursor:"pointer"}}
-                          onClick={()=>{setGlobalSearch(false);setViewingExpense(e);setModal("viewExpense");}}>
+                          onClick={()=>{setGlobalSearch(false);openViewExpense(e);}}>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                               <span style={S.badge(typeCol)}>{typeLabel}</span>
