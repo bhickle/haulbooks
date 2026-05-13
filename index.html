@@ -234,6 +234,31 @@ const VendorInput = ({value, onChange, placeholder="e.g. Sheetz, Lowe's", vendor
   );
 };
 
+const StartTripModal = ({onStart, onCancel, lastTripEndOdo, S, C}) => {
+  const [startOdo, setStartOdo] = useState(lastTripEndOdo||"");
+  const [startPurpose, setStartPurpose] = useState("Business");
+  return (
+    <div style={S.modal}>
+      <div style={{...S.mbox,maxWidth:"380px"}}>
+        <div style={S.mt}>▶ Start Trip</div>
+        <label style={S.lbl}>Starting Odometer</label>
+        <input type="number" style={S.inp} placeholder="e.g. 42100" value={startOdo} onChange={e=>setStartOdo(e.target.value)}/>
+        {lastTripEndOdo&&<div style={{fontSize:"11px",color:C.teal,marginTop:"4px"}}>↑ Pre-filled from your last trip ending ({lastTripEndOdo})</div>}
+        <label style={S.lbl}>Purpose</label>
+        <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+          {["Business","Dump Run","Client Visit","Supply Run","Equipment"].map(p=>(
+            <button key={p} style={{...S.tb(startPurpose===p,C.teal),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setStartPurpose(p)}>{p}</button>
+          ))}
+        </div>
+        <div style={S.br}>
+          <button style={{...S.btn,background:C.teal}} onClick={()=>onStart(startOdo,startPurpose)}>Start Trip</button>
+          <button style={S.bgh} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 function App() {
   // -- Top-level view: dashboard | hauling | flips | rentals | reports | settings
   const [view, setView] = useState("dashboard");
@@ -2670,30 +2695,7 @@ function App() {
       )}
 
       {/* -- START TRIP MODAL -- */}
-      {modal==="startTrip"&&(()=>{
-        const [startOdo,setStartOdo]=useState(lastTripEndOdo||"");
-        const [startPurpose,setStartPurpose]=useState("Business");
-        return (
-          <div style={S.modal}>
-            <div style={{...S.mbox,maxWidth:"380px"}}>
-              <div style={S.mt}>▶ Start Trip</div>
-              <label style={S.lbl}>Starting Odometer</label>
-              <input type="number" style={S.inp} placeholder="e.g. 42100" value={startOdo} onChange={e=>setStartOdo(e.target.value)}/>
-              {lastTripEndOdo&&<div style={{fontSize:"11px",color:C.teal,marginTop:"4px"}}>↑ Pre-filled from your last trip ending ({lastTripEndOdo})</div>}
-              <label style={S.lbl}>Purpose</label>
-              <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
-                {["Business","Dump Run","Client Visit","Supply Run","Equipment"].map(p=>(
-                  <button key={p} style={{...S.tb(startPurpose===p,C.teal),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setStartPurpose(p)}>{p}</button>
-                ))}
-              </div>
-              <div style={S.br}>
-                <button style={{...S.btn,background:C.teal}} onClick={()=>startActiveTrip(startOdo,startPurpose)}>Start Trip</button>
-                <button style={S.bgh} onClick={()=>setModal(null)}>Cancel</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {modal==="startTrip"&&<StartTripModal onStart={startActiveTrip} onCancel={()=>setModal(null)} lastTripEndOdo={lastTripEndOdo} S={S} C={C}/>}
 
       {/* -- END TRIP MODAL -- */}
       {modal==="endTrip"&&activeTrip&&(
