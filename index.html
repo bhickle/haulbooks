@@ -342,6 +342,9 @@ function App() {
   const [jobForm, setJobForm] = useState(blankJob);
   const [assetForm, setAssetForm] = useState(blankAsset);
   const [tripForm, setTripForm] = useState(blankTrip);
+  const [activeTrip, setActiveTrip] = useState(()=>{try{const s=localStorage.getItem("hb_active_trip");return s?JSON.parse(s):null;}catch{return null;}});
+  const [endTripForm, setEndTripForm] = useState({endOdometer:"",desc:"",notes:""});
+  const lastTripEndOdo = useMemo(()=>{const sorted=[...trips].sort((a,b)=>b.date.localeCompare(a.date)||String(b.id).localeCompare(String(a.id)));return sorted[0]?.endOdometer||"";},[trips]);
   const [propForm, setPropForm] = useState(blankProp);
   const [rentIncForm, setRentIncForm] = useState(blankRentInc);
   const [rentExpForm, setRentExpForm] = useState(blankRentExp);
@@ -569,6 +572,18 @@ function App() {
     if(editingId){setTrips(p=>p.map(t=>t.id===editingId?{...t,...rec}:t));}else{setTrips(p=>[rec,...p]);}
     setTripForm(blankTrip);setEditingId(null);setModal(null);
   };
+  const startActiveTrip=(startOdo,purpose)=>{const t={date:tod(),startOdometer:startOdo,purpose:purpose||"Business",startedAt:Date.now()};localStorage.setItem("hb_active_trip",JSON.stringify(t));setActiveTrip(t);setModal(null);};
+  const endActiveTrip=async()=>{
+    if(!activeTrip||!endTripForm.desc)return;
+    const endOdo=parseFloat(endTripForm.endOdometer)||0;
+    const startOdo=parseFloat(activeTrip.startOdometer)||0;
+    const miles=endOdo&&startOdo?Math.max(0,endOdo-startOdo):parseFloat(endTripForm.miles||0);
+    const rec={id:"trip_"+Date.now(),date:activeTrip.date,desc:endTripForm.desc,startOdometer:activeTrip.startOdometer||"",endOdometer:endTripForm.endOdometer||"",miles,purpose:activeTrip.purpose||"Business",notes:endTripForm.notes||""};
+    try{await sb.upsert("trips",fromTrip(rec));}catch(e){console.error(e);}
+    setTrips(p=>[rec,...p]);
+    localStorage.removeItem("hb_active_trip");setActiveTrip(null);setEndTripForm({endOdometer:"",desc:"",notes:""});setModal(null);
+  };
+  const cancelActiveTrip=()=>{if(window.confirm("Discard this active trip?")){{localStorage.removeItem("hb_active_trip");setActiveTrip(null);}}};
   const toggleMilestone=async(fid,mid)=>{const updated=flips.map(f=>f.id!==fid?f:{...f,milestones:f.milestones.map(m=>m.id!==mid?m:{...m,done:!m.done,date:!m.done?tod():""})});const flip=updated.find(f=>f.id===fid);try{await sb.upsert("flips",fromFlip(flip));}catch(e){console.error(e);}setFlips(updated);};
   const addMilestone=async(fid,label)=>{const updated=flips.map(f=>f.id!==fid?f:{...f,milestones:[...f.milestones,{id:"m_"+Date.now(),label,done:false,date:""}]});const flip=updated.find(f=>f.id===fid);try{await sb.upsert("flips",fromFlip(flip));}catch(e){console.error(e);}setFlips(updated);};
 
@@ -1026,7 +1041,9 @@ function App() {
                 {haulingTab==="leads"&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
                 {haulingTab==="scheduled"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
                 {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
-                {haulingTab==="mileage"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Trip</button>}
+                {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setModal("startTrip");}}>▶ Start Trip</button>}
+                {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Manual</button>}
+                {haulingTab==="mileage"&&activeTrip&&<button style={{...S.btn,flex:"none",background:C.red,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}}>■ End Trip</button>}
                 {haulingTab==="assets"&&<button style={{...S.btn,flex:"none",background:C.yellow,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setAssetForm(blankAsset);setEditingId(null);setModal("asset");}}>+ Add Asset</button>}
               </div>}
             </div>
@@ -1301,7 +1318,37 @@ function App() {
               const filtered=trips.filter(t=>inDateRange(t.date,fMile)).sort((a,b)=>b.date.localeCompare(a.date));
               const totalMiles=filtered.reduce((s,t)=>s+t.miles,0);
               const bizMiles=filtered.filter(t=>t.purpose!=="Personal").reduce((s,t)=>s+t.miles,0);
+              const ActiveTripBanner=(()=>{
+                if(!activeTrip)return null;
+                const elapsed=Math.floor((Date.now()-activeTrip.startedAt)/60000);
+                const hrs=Math.floor(elapsed/60),mins=elapsed%60;
+                const elapsedStr=hrs>0?`${hrs}h ${mins}m`:`${mins}m`;
+                return (
+                  <div style={{...S.card,border:`2px solid ${C.teal}`,background:C.tealD,marginBottom:"16px",position:"relative",overflow:"hidden"}}>
+                    <div style={{position:"absolute",top:0,left:0,right:0,height:"2px",background:`linear-gradient(90deg,${C.teal},transparent)`,animation:"pulse 2s infinite"}}/>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
+                      <div>
+                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                          <span style={{width:"8px",height:"8px",borderRadius:"50%",background:C.teal,display:"inline-block",boxShadow:`0 0 6px ${C.teal}`}}/>
+                          <span style={{fontWeight:"700",color:C.teal,fontSize:"14px"}}>Trip in Progress</span>
+                          <span style={S.badge(C.teal)}>{activeTrip.purpose}</span>
+                        </div>
+                        <div style={{fontSize:"12px",color:C.muted,marginTop:"4px"}}>
+                          Started {fmtDate(activeTrip.date)} · <span style={{color:C.text}}>{elapsedStr} elapsed</span>
+                          {activeTrip.startOdometer&&<> · Start: <span style={{color:C.text}}>{activeTrip.startOdometer}</span></>}
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:"8px"}}>
+                        <button onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}} style={{...S.btn,background:C.red,padding:"6px 14px",fontSize:"12px"}}>■ End Trip</button>
+                        <button onClick={cancelActiveTrip} style={{...S.bgh,padding:"6px 10px",fontSize:"11px",color:C.muted}}>Discard</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })();
               return <>
+                {ActiveTripBanner}
+                {!activeTrip&&isMobile&&<button style={{...S.btn,background:C.teal,padding:"8px 16px",fontSize:"12px",width:"100%",marginBottom:"12px"}} onClick={()=>setModal("startTrip")}>▶ Start Trip</button>}
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
                   <DateFilter f={fMile} setF={setFMile}/>
                   <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} trips</span>
@@ -2618,6 +2665,65 @@ function App() {
             <label style={S.lbl}>Notes</label>
             <input style={S.inp} placeholder="Details about the job..." value={leadForm.notes} onChange={e=>setLeadForm(f=>({...f,notes:e.target.value}))}/>
             <div style={S.br}><button style={S.btn} onClick={saveLead}>{editingId?"Update":"Save Lead"}</button><button style={S.bgh} onClick={()=>{setModal(null);setEditingId(null);setLeadForm(blankLead);}}>Cancel</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* -- START TRIP MODAL -- */}
+      {modal==="startTrip"&&(()=>{
+        const [startOdo,setStartOdo]=useState(lastTripEndOdo||"");
+        const [startPurpose,setStartPurpose]=useState("Business");
+        return (
+          <div style={S.modal}>
+            <div style={{...S.mbox,maxWidth:"380px"}}>
+              <div style={S.mt}>▶ Start Trip</div>
+              <label style={S.lbl}>Starting Odometer</label>
+              <input type="number" style={S.inp} placeholder="e.g. 42100" value={startOdo} onChange={e=>setStartOdo(e.target.value)}/>
+              {lastTripEndOdo&&<div style={{fontSize:"11px",color:C.teal,marginTop:"4px"}}>↑ Pre-filled from your last trip ending ({lastTripEndOdo})</div>}
+              <label style={S.lbl}>Purpose</label>
+              <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                {["Business","Dump Run","Client Visit","Supply Run","Equipment"].map(p=>(
+                  <button key={p} style={{...S.tb(startPurpose===p,C.teal),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setStartPurpose(p)}>{p}</button>
+                ))}
+              </div>
+              <div style={S.br}>
+                <button style={{...S.btn,background:C.teal}} onClick={()=>startActiveTrip(startOdo,startPurpose)}>Start Trip</button>
+                <button style={S.bgh} onClick={()=>setModal(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* -- END TRIP MODAL -- */}
+      {modal==="endTrip"&&activeTrip&&(
+        <div style={S.modal}>
+          <div style={{...S.mbox,maxWidth:"420px"}}>
+            <div style={S.mt}>■ End Trip</div>
+            {activeTrip.startOdometer&&<div style={{...S.card,background:C.tealD,border:`1px solid ${C.teal}44`,fontSize:"12px",marginBottom:"8px"}}>
+              Started at <strong>{activeTrip.startOdometer}</strong> on {fmtDate(activeTrip.date)}
+              {(()=>{const elapsed=Math.floor((Date.now()-activeTrip.startedAt)/60000);const hrs=Math.floor(elapsed/60),mins=elapsed%60;return <span style={{color:C.muted}}> · {hrs>0?`${hrs}h ${mins}m`:`${mins}m`} elapsed</span>;})()}
+            </div>}
+            <div style={S.row}>
+              <div style={{flex:1}}>
+                <label style={S.lbl}>Ending Odometer</label>
+                <input type="number" style={S.inp} placeholder="e.g. 42165" value={endTripForm.endOdometer}
+                  onChange={e=>setEndTripForm(f=>({...f,endOdometer:e.target.value}))}/>
+                {endTripForm.endOdometer&&activeTrip.startOdometer&&<div style={{fontSize:"11px",color:C.blue,marginTop:"3px"}}>
+                  {Math.max(0,parseFloat(endTripForm.endOdometer||0)-parseFloat(activeTrip.startOdometer||0)).toFixed(1)} miles
+                </div>}
+              </div>
+            </div>
+            <label style={S.lbl}>Description *</label>
+            <input style={S.inp} placeholder="e.g. Dump run to Rostraver" value={endTripForm.desc}
+              onChange={e=>setEndTripForm(f=>({...f,desc:e.target.value}))}/>
+            <label style={S.lbl}>Notes</label>
+            <input style={S.inp} placeholder="Optional" value={endTripForm.notes}
+              onChange={e=>setEndTripForm(f=>({...f,notes:e.target.value}))}/>
+            <div style={S.br}>
+              <button style={{...S.btn,background:C.teal}} onClick={endActiveTrip}>Save Trip</button>
+              <button style={S.bgh} onClick={()=>setModal(null)}>Cancel</button>
+            </div>
           </div>
         </div>
       )}
