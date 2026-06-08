@@ -182,7 +182,10 @@ const sb = {
 };
 
 // -- DB mappers -- JS camelCase <-> DB snake_case ------------------------------
-const toExpense = r => ({id:r.id,date:r.date,desc:r.description,category:r.category,type:r.type,flipId:r.flip_id,propertyId:r.property_id,amount:parseFloat(r.amount),payee:r.payee||"",notes:r.notes||"",receiptB64:r.receipt_b64||null,receiptMediaType:r.receipt_media_type||null,receiptIsPdf:r.receipt_is_pdf||false,receiptFileName:r.receipt_file_name||null,receiptImg:null});
+// Receipt images (base64) are huge and stored inline. The bulk list fetches every column EXCEPT receipt_b64
+// (presence is tracked via receipt_media_type -> hasReceipt); the b64 is loaded lazily per-expense on open.
+const EXPENSE_LIST_COLS = "select=id,date,description,category,type,flip_id,property_id,amount,payee,notes,receipt_media_type,receipt_is_pdf,receipt_file_name";
+const toExpense = r => ({id:r.id,date:r.date,desc:r.description,category:r.category,type:r.type,flipId:r.flip_id,propertyId:r.property_id,amount:parseFloat(r.amount),payee:r.payee||"",notes:r.notes||"",receiptB64:r.receipt_b64||null,receiptMediaType:r.receipt_media_type||null,receiptIsPdf:r.receipt_is_pdf||false,receiptFileName:r.receipt_file_name||null,hasReceipt:!!(r.receipt_b64||r.receipt_media_type),receiptImg:null});
 const fromExpense = e => ({id:e.id,date:e.date,description:e.desc,category:e.category,type:e.type,flip_id:e.flipId||null,property_id:e.propertyId||null,amount:e.amount,payee:e.payee||null,notes:e.notes||null,receipt_b64:e.receiptB64||null,receipt_media_type:e.receiptMediaType||null,receipt_is_pdf:e.receiptIsPdf||false,receipt_file_name:e.receiptFileName||null});
 // Split receipts: members share a group id baked into their record id as "<base>__sN". No schema change needed.
 const splitGroupOf = (id) => { const s=String(id||""); const i=s.indexOf("__s"); return i>=0?s.slice(0,i):null; };
@@ -306,7 +309,7 @@ function App() {
     const load = async () => {
       try {
         const [expRows,incRows,assetRows,tripRows,flipRows,conRows,propRows,vendorRows] = await Promise.all([
-          sb.select("expenses","order=date.desc"),
+          sb.select("expenses",EXPENSE_LIST_COLS+"&order=date.desc"),
           sb.select("income","order=date.desc"),
           sb.select("assets","order=date.desc"),
           sb.select("trips","order=date.desc"),
@@ -457,21 +460,44 @@ function App() {
   const startEditProp=(p)=>{setEditingId(p.id);setPropForm({address:p.address,city:p.city||"",monthlyRent:String(p.monthlyRent||""),status:p.status||"active",color:p.color||PROP_COLORS[0]});setModal("addProp");};
   const deleteProp=async(id)=>{try{await sb.remove("rental_properties",id);}catch(e){console.error(e);}setRentalProperties(p=>p.filter(r=>r.id!==id));setIncome(p=>p.filter(i=>!(i.jobType==="Rent Payment"&&i.propertyId===id)));setExpenses(p=>p.filter(e=>!(e.type==="rental"&&e.propertyId===id)));if(selectedPropId===id)setSelectedPropId(null);};
   const startEditRentInc=(r)=>{setEditingId(r.id);setRentIncForm({date:r.date,propertyId:r.propertyId||"",tenant:r.customer||r.tenant||"",amount:String(r.amount),paymentMethod:r.paymentMethod||"Check",notes:r.notes||""});setModal("rentInc");};
-  const startEditRentExp=(e)=>{setEditingId(e.id);setRentExpForm({date:e.date,propertyId:e.propertyId||"",desc:e.desc||"",vendor:e.payee||e.vendor||"",amount:String(e.amount),category:e.category||"Insurance",subcategory:e.notes||e.subcategory||"",receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,receiptFileName:e.receiptFileName||null});setModal("rentExp");};
-  const startEditExpense=(e)=>{
+  // Lazily fetch a single expense's heavy receipt_b64 (kept out of the bulk list load).
+  const fetchReceipt=async(id)=>{
+    try{
+      const rows=await sb.select("expenses",`select=receipt_b64,receipt_media_type,receipt_is_pdf,receipt_file_name&id=eq.${encodeURIComponent(id)}`);
+      const r=rows&&rows[0];if(!r)return null;
+      return {receiptB64:r.receipt_b64||null,receiptMediaType:r.receipt_media_type||null,receiptIsPdf:r.receipt_is_pdf||false,receiptFileName:r.receipt_file_name||null};
+    }catch(err){console.error("fetchReceipt",err);return null;}
+  };
+  // Open the read-only expense detail; pull its receipt in the background and merge it in.
+  const openViewExpense=async(e)=>{
+    setViewingExpense(e);setModal("viewExpense");
+    if(e.hasReceipt&&!e.receiptB64){
+      const r=await fetchReceipt(e.id);
+      if(r){setViewingExpense(v=>v&&v.id===e.id?{...v,...r}:v);setExpenses(p=>p.map(x=>x.id===e.id?{...x,...r}:x));}
+    }
+  };
+  const startEditRentExp=async(e)=>{
+    let rc={receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,receiptFileName:e.receiptFileName||null};
+    if(e.hasReceipt&&!e.receiptB64){const r=await fetchReceipt(e.id);if(r)rc=r;}
+    setEditingId(e.id);setRentExpForm({date:e.date,propertyId:e.propertyId||"",desc:e.desc||"",vendor:e.payee||e.vendor||"",amount:String(e.amount),category:e.category||"Insurance",subcategory:e.notes||e.subcategory||"",...rc});setModal("rentExp");};
+  const startEditExpense=async(e)=>{
     const grp=splitGroupOf(e.id);
     const members=grp?expenses.filter(x=>splitGroupOf(x.id)===grp).sort((a,b)=>String(a.id).localeCompare(String(b.id))):[];
     if(grp&&members.length>0){
       // Editing a split receipt: load all sibling lines and the shared header/receipt.
       const h=members[0];
+      let rc={receiptB64:h.receiptB64||null,receiptMediaType:h.receiptMediaType||null,receiptIsPdf:h.receiptIsPdf||false,receiptFileName:h.receiptFileName||null};
+      if(h.hasReceipt&&!h.receiptB64){const r=await fetchReceipt(h.id);if(r)rc=r;}
       setEditingSplitGroup(grp);setEditingId(null);setSplitMode(true);
       setSplitLines(members.map(m=>({type:m.type,flipId:m.flipId||"",propertyId:m.propertyId||"",category:m.category,amount:String(m.amount),desc:m.desc||""})));
       setSplitTotal(String(members.reduce((s,m)=>s+m.amount,0)));
-      setExpForm({date:h.date,desc:"",category:h.category,type:h.type,flipId:"",propertyId:"",amount:"",payee:h.payee||"",notes:h.notes||"",receiptImg:h.receiptImg||null,receiptB64:h.receiptB64||null,receiptMediaType:h.receiptMediaType||null,receiptIsPdf:h.receiptIsPdf||false,receiptFileName:h.receiptFileName||null});
+      setExpForm({date:h.date,desc:"",category:h.category,type:h.type,flipId:"",propertyId:"",amount:"",payee:h.payee||"",notes:h.notes||"",receiptImg:h.receiptImg||null,...rc});
       setReceiptState("idle");setReceiptData(null);setModal("expense");return;
     }
     setEditingSplitGroup(null);setSplitMode(false);setSplitLines([]);setSplitTotal("");
-    setEditingId(e.id);setExpForm({date:e.date,desc:e.desc,category:e.category,type:e.type,flipId:e.flipId||"",propertyId:e.propertyId||"",amount:String(e.amount),payee:e.payee||"",notes:e.notes||"",receiptImg:e.receiptImg||null,receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,receiptFileName:e.receiptFileName||null});setModal("expense");};
+    let rc={receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,receiptFileName:e.receiptFileName||null};
+    if(e.hasReceipt&&!e.receiptB64){const r=await fetchReceipt(e.id);if(r)rc=r;}
+    setEditingId(e.id);setExpForm({date:e.date,desc:e.desc,category:e.category,type:e.type,flipId:e.flipId||"",propertyId:e.propertyId||"",amount:String(e.amount),payee:e.payee||"",notes:e.notes||"",receiptImg:e.receiptImg||null,...rc});setModal("expense");};
   const startEditJob=(i)=>{setEditingId(i.id);setJobForm({date:i.date,customer:i.customer,phone:i.phone||"",address:i.address||"",jobType:i.jobType,amount:String(i.amount),paymentMethod:i.paymentMethod,notes:i.notes||""});setModal("job");};
   const startEditAsset=(a)=>{setEditingId(a.id);setAssetForm({date:a.date,name:a.name,vendor:a.vendor||"",cost:String(a.cost),notes:a.notes||""});setModal("asset");};
   const startEditTrip=(t)=>{setEditingId(t.id);setTripForm({date:t.date,desc:t.desc,startOdometer:t.startOdometer||"",endOdometer:t.endOdometer||"",miles:String(t.miles),purpose:t.purpose||"Business",notes:t.notes||""});setModal("trip");};
@@ -776,9 +802,9 @@ function App() {
         </div>
         {fExp.length===0?<div style={{...S.card,color:C.muted,textAlign:"center",padding:"24px",fontSize:"13px"}}>No expenses match filters</div>:(
           <div style={S.card}><table style={S.tbl}><thead><tr>{["Date","Description","Category","Payee","Amount",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
-            {fExp.map(e=>(<tr key={e.id} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}} style={{cursor:"pointer"}}>
+            {fExp.map(e=>(<tr key={e.id} onClick={()=>openViewExpense(e)} style={{cursor:"pointer"}}>
               <td style={{...S.td,color:C.muted,whiteSpace:"nowrap",fontSize:"11px"}}>{fmtDate(e.date)}</td>
-              <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"6px"}}>{e.receiptB64&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div>{e.desc}</div></div></td>
+              <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"6px"}}>{(e.receiptB64||e.hasReceipt)&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div>{e.desc}</div></div></td>
               <td style={S.td}><span style={S.badge(flip.color)}>{e.category}</span></td>
               <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{e.payee||"--"}</td>
               <td style={{...S.td,fontWeight:"700"}}>{fmt(e.amount)}</td>
@@ -965,7 +991,7 @@ function App() {
               {allRecent.length===0&&<div style={{textAlign:"center",color:C.muted,padding:"24px",fontSize:"13px"}}>No activity yet</div>}
               {allRecent.map((r,i)=>(
                 <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:i<allRecent.length-1?`1px solid ${C.faint}`:"none",cursor:"pointer"}}
-                  onClick={()=>{if(r._type==="expense"){setViewingExpense(r);setModal("viewExpense");}else{setViewingJob(r);setModal("viewJob");}}}>
+                  onClick={()=>{if(r._type==="expense"){openViewExpense(r);}else{setViewingJob(r);setModal("viewJob");}}}>
                   <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
                     <div style={{width:"6px",height:"6px",borderRadius:"50%",background:r._col,flexShrink:0,marginTop:"1px"}}/>
                     <div>
@@ -1084,11 +1110,11 @@ function App() {
                   <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
                     {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No expenses in this period</div>}
                     {filtered.map(e=>(
-                      <div key={e.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${C.red}`}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                      <div key={e.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${C.red}`}} onClick={()=>openViewExpense(e)}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
-                              {e.receiptB64&&<span style={{fontSize:"12px"}}>🧾</span>}
+                              {(e.receiptB64||e.hasReceipt)&&<span style={{fontSize:"12px"}}>🧾</span>}
                               <div style={{fontWeight:"600",fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.desc||"—"}</div>
                             </div>
                             <div style={{display:"flex",gap:"6px",marginTop:"5px",flexWrap:"wrap",alignItems:"center"}}>
@@ -1106,9 +1132,9 @@ function App() {
                   <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Description","Category","Payee","Amount",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
                     {filtered.length===0&&<tr><td colSpan={6} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No expenses in this period</td></tr>}
                     {filtered.map(e=>(
-                      <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                      <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>openViewExpense(e)}>
                         <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
-                        <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
+                        <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{(e.receiptB64||e.hasReceipt)&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                         <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
                         <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{e.payee||"--"}</td>
                         <td style={{...S.td,fontWeight:"700"}}>{fmt(e.amount)}</td>
@@ -1868,9 +1894,9 @@ function App() {
                         const typeCol=e.type==="business"?C.orange:e.type==="flip"?C.teal:C.purple;
                         const typeLabel=e.type==="business"?"Hauling":e.type==="flip"?(flip?.name||"Flip"):e.type==="rental"?(prop?.address||"Rental"):"";
                         return(
-                          <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{setViewingExpense(e);setModal("viewExpense");}}>
+                          <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>openViewExpense(e)}>
                             <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
-                            <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
+                            <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{(e.receiptB64||e.hasReceipt)&&<span>🧾</span>}{splitGroupOf(e.id)&&<span title="Part of a split receipt">✂️</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                             <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
                             <td style={S.td}><span style={S.badge(typeCol)}>{typeLabel}</span></td>
                             <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{e.payee||"--"}</td>
@@ -2020,7 +2046,7 @@ function App() {
               </div>
               {e.notes&&<div style={{background:C.bg,borderRadius:"8px",padding:"12px",marginBottom:"14px"}}><div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>Notes</div><div style={{fontSize:"13px"}}>{e.notes}</div></div>}
               <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"8px"}}>Receipt</div>
-              {(e.receiptB64||e.receiptImg)?(e.receiptIsPdf?<PdfViewer b64={e.receiptB64}/>:<div><img src={imgSrc} alt="Receipt" style={{width:"100%",borderRadius:"10px",border:`1px solid ${C.border}`,display:"block",cursor:"zoom-in"}} onClick={()=>window.open(imgSrc,"_blank")}/><div style={{fontSize:"11px",color:C.muted,marginTop:"6px",textAlign:"center"}}>Tap to open full size</div></div>):<div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:"10px",padding:"20px",textAlign:"center",color:C.muted,fontSize:"12px"}}>No receipt attached</div>}
+              {(e.receiptB64||e.receiptImg)?(e.receiptIsPdf?<PdfViewer b64={e.receiptB64}/>:<div><img src={imgSrc} alt="Receipt" style={{width:"100%",borderRadius:"10px",border:`1px solid ${C.border}`,display:"block",cursor:"zoom-in"}} onClick={()=>window.open(imgSrc,"_blank")}/><div style={{fontSize:"11px",color:C.muted,marginTop:"6px",textAlign:"center"}}>Tap to open full size</div></div>):(e.hasReceipt?<div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:"10px",padding:"20px",textAlign:"center",color:C.muted,fontSize:"12px"}}>⏳ Loading receipt…</div>:<div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:"10px",padding:"20px",textAlign:"center",color:C.muted,fontSize:"12px"}}>No receipt attached</div>)}
               <div style={{...S.br,marginTop:"20px"}}>
                 <button style={{...S.btn,background:C.blue}} onClick={()=>{setModal(null);startEditExpense(e);}}>Edit</button>
                 <button style={{...S.btn,background:C.red}} onClick={()=>{deleteExpense(e.id);setModal(null);}}>Delete</button>
@@ -2558,12 +2584,12 @@ function App() {
                       const typeCol=e.type==="business"?C.orange:e.type==="flip"?C.teal:C.purple;
                       return(
                         <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:`1px solid ${C.faint}`,cursor:"pointer"}}
-                          onClick={()=>{setGlobalSearch(false);setViewingExpense(e);setModal("viewExpense");}}>
+                          onClick={()=>{setGlobalSearch(false);openViewExpense(e);}}>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                               <span style={S.badge(typeCol)}>{typeLabel}</span>
                               <span style={{fontWeight:"600",fontSize:"13px"}}>{e.desc}</span>
-                              {e.receiptB64&&<span style={{fontSize:"11px"}}>🧾</span>}
+                              {(e.receiptB64||e.hasReceipt)&&<span style={{fontSize:"11px"}}>🧾</span>}
                             </div>
                             <div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>{fmtDate(e.date)} · {e.category} · {e.payee||"--"}</div>
                           </div>
