@@ -103,7 +103,14 @@ const C = {
 const BUSINESS_CATS = ["Fuel","Mileage","Truck Maintenance","Trailer Maintenance","Vehicle Wash & Road Services","Dump Fees","Tolls","Parking","Truck Insurance","Trailer Insurance","Business Insurance","Truck Loan Interest","Loan Payment (Principal)","Registration & Tags","Tools & Equipment","Contract Labor","Licenses & Fees","Phone / Cell","Internet","Marketing","Office / Admin","Utilities","Other Business"];
 const ALL_CATS = [...BUSINESS_CATS];
 const PAY_METHODS = ["Cash","Venmo","Zelle","Check","Card"];
-const HAULING_TYPES = ["Junk Removal","Estate Cleanout","Other Hauling"];
+// The shape of the job -- one per job, kept non-overlapping. Used everywhere a
+// job type is chosen, including leads, so a converted lead can't produce a type
+// the job form is unable to show.
+const HAULING_TYPES = ["Junk Removal","Estate Cleanout","Rental Turnover","Demo / Teardown","Other"];
+// What was actually hauled. Separate from the type because most jobs are a mix
+// ("furniture and hot tub"), so forcing one label throws the rest away.
+const JOB_TAGS = ["Shed","Hot Tub","Furniture","Appliances","Deck / Fencing","Yard Waste","Construction Debris","Garage / Basement"];
+const JOB_TYPE_COLORS = {"Junk Removal":"#e8833a","Estate Cleanout":"#bc8cff","Rental Turnover":"#3fb950","Demo / Teardown":"#f85149","Other":"#7d8590"};
 const TAX_MAP = {
   "Fuel":"Vehicle Expenses","Mileage":"Vehicle Expenses","Truck Maintenance":"Vehicle Expenses",
   "Trailer Maintenance":"Vehicle Expenses","Vehicle Wash & Road Services":"Vehicle Expenses",
@@ -368,8 +375,8 @@ const sb = {
 // -- DB mappers -- JS camelCase <-> DB snake_case ------------------------------
 const toExpense = r => ({id:r.id,date:r.date,desc:r.description,category:r.category,type:r.type,flipId:r.flip_id,propertyId:r.property_id,amount:parseFloat(r.amount),payee:r.payee||"",notes:r.notes||"",receiptB64:r.receipt_b64||null,receiptMediaType:r.receipt_media_type||null,receiptIsPdf:r.receipt_is_pdf||false,receiptFileName:r.receipt_file_name||null,receiptImg:null});
 const fromExpense = e => ({id:e.id,date:e.date,description:e.desc,category:e.category,type:e.type,flip_id:e.flipId||null,property_id:e.propertyId||null,amount:e.amount,payee:e.payee||null,notes:e.notes||null,receipt_b64:e.receiptB64||null,receipt_media_type:e.receiptMediaType||null,receipt_is_pdf:e.receiptIsPdf||false,receipt_file_name:e.receiptFileName||null});
-const toIncome = r => ({id:r.id,date:r.date,customer:r.customer,jobType:r.job_type,propertyId:r.property_id,amount:parseFloat(r.amount),paymentMethod:r.payment_method||"Cash",phone:r.phone||"",address:r.address||"",notes:r.notes||""});
-const fromIncome = i => ({id:i.id,date:i.date,customer:i.customer,job_type:i.jobType,property_id:i.propertyId||null,amount:i.amount,payment_method:i.paymentMethod||"Cash",phone:i.phone||null,address:i.address||null,notes:i.notes||null});
+const toIncome = r => ({id:r.id,date:r.date,customer:r.customer,jobType:r.job_type,propertyId:r.property_id,amount:parseFloat(r.amount),paymentMethod:r.payment_method||"Cash",phone:r.phone||"",address:r.address||"",notes:r.notes||"",tags:Array.isArray(r.tags)?r.tags:[]});
+const fromIncome = i => ({id:i.id,date:i.date,customer:i.customer,job_type:i.jobType,property_id:i.propertyId||null,amount:i.amount,payment_method:i.paymentMethod||"Cash",phone:i.phone||null,address:i.address||null,notes:i.notes||null,tags:i.tags||[]});
 const toAsset = r => ({id:r.id,date:r.date,name:r.name,vendor:r.vendor||"",cost:parseFloat(r.cost),notes:r.notes||""});
 const fromAsset = a => ({id:a.id,date:a.date,name:a.name,vendor:a.vendor||null,cost:a.cost,notes:a.notes||null});
 const toTrip = r => ({id:r.id,date:r.date,desc:r.description,startOdometer:r.start_odometer||"",endOdometer:r.end_odometer||"",miles:parseFloat(r.miles||0),purpose:r.purpose||"Business",notes:r.notes||""});
@@ -488,6 +495,7 @@ function App() {
   const makeFilter = (year="all") => ({mode:"year", year, start:"", end:""});
   const [fHaulingJobs, setFHaulingJobs] = useState(makeFilter("all"));
   const [fHaulingExp, setFHaulingExp] = useState(makeFilter("all"));
+  const [jobTagFilter, setJobTagFilter] = useState("");   // Jobs tab: filter by what was hauled
   const [expSearch, setExpSearch] = useState(""); // shared text search across expense tabs
   const [expFilterPayee, setExpFilterPayee] = useState(""); // shared payee filter
   const [expFilterCat, setExpFilterCat] = useState(""); // shared category filter
@@ -534,7 +542,7 @@ function App() {
   // receiptDirty: the receipt was added, replaced or removed in this session.
   // Only then does a save write the receipt columns.
   const blankExp = {date:tod(),desc:"",category:"Fuel",type:"business",flipId:"",propertyId:"",amount:"",payee:"",notes:"",receiptImg:null,receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null,receiptDirty:false};
-  const blankJob = {date:tod(),customer:"",phone:"",address:"",jobType:"Junk Removal",amount:"",paymentMethod:"Cash",notes:""};
+  const blankJob = {date:tod(),customer:"",phone:"",address:"",jobType:"Junk Removal",amount:"",paymentMethod:"Cash",notes:"",tags:[]};
   const blankAsset = {date:tod(),name:"",vendor:"",cost:"",notes:"Depreciable asset -- consult accountant re: Section 179"};
   const blankTrip = {date:tod(),desc:"",startOdometer:"",endOdometer:"",miles:"",purpose:"Business",notes:""};
   const [expForm, setExpForm] = useState(blankExp);
@@ -807,7 +815,7 @@ function App() {
       }catch(err){ console.error("Receipt load:",err); }
     }
   };
-  const startEditJob=(i)=>{setEditingId(i.id);setJobForm({date:i.date,customer:i.customer,phone:i.phone||"",address:i.address||"",jobType:i.jobType,amount:String(i.amount),paymentMethod:i.paymentMethod,notes:i.notes||""});setModal("job");};
+  const startEditJob=(i)=>{setEditingId(i.id);setJobForm({date:i.date,customer:i.customer,phone:i.phone||"",address:i.address||"",jobType:i.jobType,amount:String(i.amount),paymentMethod:i.paymentMethod,notes:i.notes||"",tags:i.tags||[]});setModal("job");};
   const startEditAsset=(a)=>{setEditingId(a.id);setAssetForm({date:a.date,name:a.name,vendor:a.vendor||"",cost:String(a.cost),notes:a.notes||""});setModal("asset");};
   const startEditTrip=(t)=>{setEditingId(t.id);setTripForm({date:t.date,desc:t.desc,startOdometer:t.startOdometer||"",endOdometer:t.endOdometer||"",miles:String(t.miles),purpose:t.purpose||"Business",notes:t.notes||""});setModal("trip");};
 
@@ -824,7 +832,7 @@ function App() {
   const startEditLead=(l)=>{setEditingId(l.id);setLeadForm({date:l.date,customer:l.customer,phone:l.phone||"",address:l.address||"",jobType:l.jobType||"",estimatedAmount:l.estimatedAmount?String(l.estimatedAmount):"",status:l.status||"new",notes:l.notes||"",scheduledDate:l.scheduledDate||""});setModal("lead");};
   const convertLeadToJob=async(lead)=>{
     if(!window.confirm(`Convert "${lead.customer}" to a completed job?`))return;
-    const jobRec={id:"job_"+Date.now(),date:lead.scheduledDate||lead.date,customer:lead.customer,phone:lead.phone||"",address:lead.address||"",jobType:lead.jobType||"Junk Removal",amount:lead.estimatedAmount||0,paymentMethod:"Cash",notes:(lead.notes||"")+" [Converted from lead]",propertyId:null,flipId:null};
+    const jobRec={id:"job_"+Date.now(),date:lead.scheduledDate||lead.date,customer:lead.customer,phone:lead.phone||"",address:lead.address||"",jobType:lead.jobType||"Junk Removal",amount:lead.estimatedAmount||0,paymentMethod:"Cash",notes:(lead.notes||"")+" [Converted from lead]",tags:[],propertyId:null,flipId:null};
     try{await sb.upsert("income",fromIncome(jobRec));}catch(e){console.error(e);}
     setIncome(p=>[jobRec,...p]);
     const updated={...lead,status:"complete"};
@@ -1336,34 +1344,63 @@ function App() {
 
             {/* -- JOBS TAB -- */}
             {haulingTab==="jobs"&&(()=>{
-              const filtered=haulingIncome.filter(i=>inDateRange(i.date,fHaulingJobs)).sort((a,b)=>b.date.localeCompare(a.date));
+              const dateOnly=haulingIncome.filter(i=>inDateRange(i.date,fHaulingJobs));
+              const filtered=dateOnly.filter(i=>!jobTagFilter||(i.tags||[]).indexOf(jobTagFilter)>=0)
+                                     .sort((a,b)=>b.date.localeCompare(a.date));
               const total=filtered.reduce((s,i)=>s+i.amount,0);
+              // Revenue by type, biggest first, so the cards follow the work rather
+              // than a hardcoded pair that goes stale whenever the list changes.
+              const byType=HAULING_TYPES.map(t=>{
+                const rows=filtered.filter(i=>i.jobType===t);
+                return {t,n:rows.length,sum:rows.reduce((s,i)=>s+i.amount,0)};
+              }).filter(x=>x.n>0).sort((a,b)=>b.sum-a.sum);
+              // Tag counts come from the date range, not the tag filter, so the
+              // chips don't vanish as soon as one is picked.
+              const tagStats=JOB_TAGS.map(tg=>{
+                const rows=dateOnly.filter(i=>(i.tags||[]).indexOf(tg)>=0);
+                return {tg,n:rows.length,sum:rows.reduce((s,i)=>s+i.amount,0)};
+              }).filter(x=>x.n>0).sort((a,b)=>b.sum-a.sum);
               return <>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
                   <DateFilter f={fHaulingJobs} setF={setFHaulingJobs}/>
                   <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} jobs · {fmt(total)}</span>
                 </div>
-                <div style={S.g3}>
-                  {[
-                    ["Total Revenue",fmt(total),C.orange],
-                    ["Junk Removal",fmt(filtered.filter(i=>i.jobType==="Junk Removal").reduce((s,i)=>s+i.amount,0)),C.teal],
-                    ["Estate Cleanout",fmt(filtered.filter(i=>i.jobType==="Estate Cleanout").reduce((s,i)=>s+i.amount,0)),C.purple],
-                  ].map(([l,v,col])=>(
-                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"20px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
+                <div style={S.g4}>
+                  <div style={S.card}><div style={S.sl}>Total Revenue</div><div style={{fontSize:"20px",fontWeight:"700",color:C.orange,marginTop:"4px"}}>{fmt(total)}</div><div style={{fontSize:"10px",color:C.muted,marginTop:"2px"}}>{filtered.length} jobs</div></div>
+                  {byType.slice(0,3).map(x=>(
+                    <div key={x.t} style={S.card}>
+                      <div style={S.sl}>{x.t}</div>
+                      <div style={{fontSize:"20px",fontWeight:"700",color:JOB_TYPE_COLORS[x.t]||C.muted,marginTop:"4px"}}>{fmt(x.sum)}</div>
+                      <div style={{fontSize:"10px",color:C.muted,marginTop:"2px"}}>{x.n} job{x.n===1?"":"s"} · {fmt(x.sum/x.n)} avg</div>
+                    </div>
                   ))}
                 </div>
+                {tagStats.length>0&&(
+                  <div style={{marginTop:"14px"}}>
+                    <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"7px"}}>What you hauled — tap to filter</div>
+                    <div style={{display:"flex",gap:"5px",flexWrap:"wrap",alignItems:"center"}}>
+                      {tagStats.map(x=>(
+                        <button key={x.tg} style={{...S.tb(jobTagFilter===x.tg,C.blue),flex:"none",padding:"6px 10px",fontSize:"11px"}}
+                          onClick={()=>setJobTagFilter(jobTagFilter===x.tg?"":x.tg)}>
+                          {x.tg} <span style={{opacity:0.65}}>{x.n} · {fmt(x.sum)}</span>
+                        </button>
+                      ))}
+                      {jobTagFilter&&<button style={{background:"none",border:"none",color:C.muted,fontSize:"12px",cursor:"pointer"}} onClick={()=>setJobTagFilter("")}>✕ clear</button>}
+                    </div>
+                  </div>
+                )}
                 {isMobile?(
                   <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
                     {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No jobs in this period</div>}
                     {filtered.map(i=>(
-                      <div key={i.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${i.jobType==="Estate Cleanout"?C.purple:C.orange}`}} onClick={()=>{setViewingJob(i);setModal("viewJob");}}>
+                      <div key={i.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:`3px solid ${JOB_TYPE_COLORS[i.jobType]||C.orange}`}} onClick={()=>{setViewingJob(i);setModal("viewJob");}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                           <div style={{fontWeight:"700",fontSize:"14px"}}>{i.customer}</div>
                           <div style={{fontWeight:"700",color:C.teal,fontSize:"15px"}}>{fmt(i.amount)}</div>
                         </div>
                         <div style={{display:"flex",gap:"6px",marginTop:"6px",flexWrap:"wrap",alignItems:"center"}}>
                           <span style={{fontSize:"11px",color:C.muted}}>{fmtDate(i.date)}</span>
-                          <span style={S.badge(i.jobType==="Estate Cleanout"?C.purple:C.orange)}>{i.jobType}</span>
+                          <span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>
                           <span style={S.badge(C.blue)}>{i.paymentMethod}</span>
                         </div>
                         {i.phone&&<div style={{fontSize:"11px",color:C.muted,marginTop:"4px"}}>📞 {i.phone}</div>}
@@ -1378,7 +1415,14 @@ function App() {
                         <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(i.date)}</td>
                         <td style={{...S.td,fontWeight:"600"}}>{i.customer}</td>
                         <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{i.phone||"--"}</td>
-                        <td style={S.td}><span style={S.badge(i.jobType==="Estate Cleanout"?C.purple:C.orange)}>{i.jobType}</span></td>
+                        <td style={S.td}>
+                          <span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>
+                          {(i.tags||[]).length>0&&(
+                            <div style={{display:"flex",gap:"3px",flexWrap:"wrap",marginTop:"4px"}}>
+                              {i.tags.map(tg=><span key={tg} style={{fontSize:"9px",color:C.blue,background:C.blueD,border:`1px solid ${C.blue}33`,borderRadius:"4px",padding:"1px 5px"}}>{tg}</span>)}
+                            </div>
+                          )}
+                        </td>
                         <td style={S.td}><span style={S.badge(C.blue)}>{i.paymentMethod}</span></td>
                         <td style={{...S.td,fontWeight:"700",color:C.teal}}>{fmt(i.amount)}</td>
                         <td style={S.td} onClick={ev=>ev.stopPropagation()}><button onClick={()=>deleteJob(i.id)} style={S.xBtn}>×</button></td>
@@ -2028,7 +2072,7 @@ function App() {
               <div style={S.mt}>{i.customer}</div>
               <button onClick={()=>setModal(null)} style={S.xBtn}>×</button>
             </div>
-            <div style={{marginBottom:"18px"}}><span style={S.badge(i.jobType==="Estate Cleanout"?C.purple:C.orange)}>{i.jobType}</span></div>
+            <div style={{marginBottom:"18px",display:"flex",gap:"5px",flexWrap:"wrap"}}><span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>{(i.tags||[]).map(tg=><span key={tg} style={S.badge(C.blue)}>{tg}</span>)}</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"14px"}}>
               {[["Date",fmtDate(i.date)],["Amount",fmt(i.amount)],["Payment",i.paymentMethod],["Phone",i.phone||"--"]].map(([label,val])=>(
                 <div key={label} style={{background:C.bg,borderRadius:"8px",padding:"12px"}}>
@@ -2055,8 +2099,18 @@ function App() {
             <div style={S.mt}>{editingId?"Edit Job":"Log Hauling Job"}</div>
             <div style={S.ms}>Record a completed junk removal or cleanout</div>
             <label style={S.lbl}>Job Type *</label>
-            <div style={{display:"flex",gap:"6px"}}>
-              {HAULING_TYPES.map(jt=><button key={jt} style={{...S.tb(jobForm.jobType===jt,jt==="Estate Cleanout"?C.purple:C.orange),flex:1,padding:"8px 4px",fontSize:"11px"}} onClick={()=>setJobForm(f=>({...f,jobType:jt}))}>{jt}</button>)}
+            <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+              {HAULING_TYPES.map(jt=><button key={jt} style={{...S.tb(jobForm.jobType===jt,JOB_TYPE_COLORS[jt]||C.orange),flex:"none",padding:"7px 11px",fontSize:"11px"}} onClick={()=>setJobForm(f=>({...f,jobType:jt}))}>{jt}</button>)}
+            </div>
+            <label style={S.lbl}>What was hauled <span style={{textTransform:"none",letterSpacing:0,fontWeight:"400"}}>— pick any that apply</span></label>
+            <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+              {JOB_TAGS.map(tg=>{
+                const on=(jobForm.tags||[]).indexOf(tg)>=0;
+                return <button key={tg} style={{...S.tb(on,C.blue),flex:"none",padding:"6px 10px",fontSize:"11px"}}
+                  onClick={()=>setJobForm(f=>{const cur=f.tags||[];return {...f,tags:cur.indexOf(tg)>=0?cur.filter(x=>x!==tg):[...cur,tg]};})}>
+                  {on?"✓ ":""}{tg}
+                </button>;
+              })}
             </div>
             <div style={S.row}>
               <div style={{flex:1}}><label style={S.lbl}>Date *</label><input type="date" style={S.inp} value={jobForm.date} onChange={e=>setJobForm(f=>({...f,date:e.target.value}))}/></div>
@@ -2399,7 +2453,7 @@ function App() {
               <div style={{flex:1}}><label style={S.lbl}>Job Type</label>
                 <select style={S.sel} value={leadForm.jobType} onChange={e=>setLeadForm(f=>({...f,jobType:e.target.value}))}>
                   <option value="">-- Select --</option>
-                  {["Junk Removal","Estate Cleanout","Yard Cleanup","Demolition","Dump Run","Moving Help","Other"].map(t=><option key={t} value={t}>{t}</option>)}
+                  {HAULING_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
               <div style={{flex:1}}><label style={S.lbl}>Est. Amount ($)</label><input type="number" style={S.inp} placeholder="0.00" value={leadForm.estimatedAmount} onChange={e=>setLeadForm(f=>({...f,estimatedAmount:e.target.value}))}/></div>
