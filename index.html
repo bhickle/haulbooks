@@ -106,11 +106,14 @@ const PAY_METHODS = ["Cash","Venmo","Zelle","Check","Card"];
 // The shape of the job -- one per job, kept non-overlapping. Used everywhere a
 // job type is chosen, including leads, so a converted lead can't produce a type
 // the job form is unable to show.
-const HAULING_TYPES = ["Junk Removal","Estate Cleanout","Rental Turnover","Demo / Teardown","Other"];
+// Mirrors the three services on the logo: junk removal | property cleanouts |
+// light demolition. Estate cleanouts and rental turnovers are the same work --
+// emptying a property -- so they are one type; the circumstance lives in the notes.
+const HAULING_TYPES = ["Junk Removal","Property Cleanout","Demo / Teardown","Other"];
 // What was actually hauled. Separate from the type because most jobs are a mix
 // ("furniture and hot tub"), so forcing one label throws the rest away.
 const JOB_TAGS = ["Shed","Hot Tub","Furniture","Appliances","Deck / Fencing","Yard Waste","Construction Debris","Garage / Basement"];
-const JOB_TYPE_COLORS = {"Junk Removal":"#e8833a","Estate Cleanout":"#bc8cff","Rental Turnover":"#3fb950","Demo / Teardown":"#f85149","Other":"#7d8590"};
+const JOB_TYPE_COLORS = {"Junk Removal":"#e8833a","Property Cleanout":"#bc8cff","Demo / Teardown":"#f85149","Other":"#7d8590"};
 const TAX_MAP = {
   "Fuel":"Vehicle Expenses","Mileage":"Vehicle Expenses","Truck Maintenance":"Vehicle Expenses",
   "Trailer Maintenance":"Vehicle Expenses","Vehicle Wash & Road Services":"Vehicle Expenses",
@@ -351,7 +354,7 @@ const SEED_EXPENSES = [
   {id:"test_exp1",date:"2025-07-10",desc:"Diesel fuel",category:"Fuel",type:"business",flipId:null,propertyId:null,amount:99.67,payee:"Sheetz",notes:"",receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null,receiptImg:null},
 ];
 const SEED_INCOME = [
-  {id:"test_inc1",date:"2025-10-10",customer:"Cathy Gallo",jobType:"Estate Cleanout",propertyId:null,amount:1700.00,paymentMethod:"Cash",phone:"",address:"",notes:"Cleanout from Paps house"},
+  {id:"test_inc1",date:"2025-10-10",customer:"Cathy Gallo",jobType:"Property Cleanout",propertyId:null,amount:1700.00,paymentMethod:"Cash",phone:"",address:"",notes:"Cleanout from Paps house"},
 ];
 const SEED_ASSETS = [{id:"asset_1",date:"2025-05-30",name:"2024 Ford F250",vendor:"Davies Ford",cost:15500.00,notes:"Section 179"}];
 const SEED_TRIPS = [{id:"trip_1",date:"2025-07-11",desc:"Job + landfill run",startOdometer:"482",endOdometer:"509",miles:27,purpose:"Job",notes:""}];
