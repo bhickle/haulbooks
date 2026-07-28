@@ -114,6 +114,9 @@ const TAX_MAP = {
   "Phone / Cell":"Utilities","Internet":"Utilities","Marketing":"Advertising","Office / Admin":"Office Expenses",
   "Dump Fees":"Cost of Services","Utilities":"Utilities","Other Business":"Miscellaneous",
 };
+// List queries leave receipt_b64 out (it's megabytes), so presence has to be
+// judged from the metadata columns, which are always loaded.
+const hasReceipt = (e) => !!(e && (e.receiptB64 || e.receiptImg || e.receiptFileName || e.receiptMediaType));
 const fmt = (n) => "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d?new Date(d+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"--";
 const tod = () => new Date().toISOString().split("T")[0];
@@ -322,6 +325,9 @@ const sbFetch = async (path, opts={}) => {
 const sb = {
   select: (table, qs="") => sbFetch(table + "?" + qs),
   upsert: (table, body) => sbFetch(table, { method: "POST", body: JSON.stringify(body), headers: { Prefer: "resolution=merge-duplicates,return=representation" } }),
+  // Partial update. Editing a row must not send columns it isn't changing --
+  // receipt images are loaded lazily, so a whole-row write would blank them.
+  update: (table, id, body) => sbFetch(table + "?id=eq." + id, { method: "PATCH", body: JSON.stringify(body) }),
   remove: (table, id) => sbFetch(table + "?id=eq." + id, { method: "DELETE", prefer: "return=minimal", headers: { Prefer: "return=minimal" } }),
 };
 
@@ -474,6 +480,9 @@ function App() {
   const [receiptData, setReceiptData] = useState(null);
   const [scanError, setScanError] = useState("");
   const [scanTarget, setScanTarget] = useState("expense");
+  // "scan" reads the file with AI and fills the form; "attach" just files the
+  // image against an expense that already has its details.
+  const [receiptMode, setReceiptMode] = useState("scan");
   const fileRef = useRef(); const cameraRef = useRef(); const stmtRef = useRef();
 
   // -- Statement import state
@@ -488,7 +497,9 @@ function App() {
   const [importResult, setImportResult] = useState(null);
 
   // -- Form state
-  const blankExp = {date:tod(),desc:"",category:"Fuel",type:"business",flipId:"",propertyId:"",amount:"",payee:"",notes:"",receiptImg:null,receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null};
+  // receiptDirty: the receipt was added, replaced or removed in this session.
+  // Only then does a save write the receipt columns.
+  const blankExp = {date:tod(),desc:"",category:"Fuel",type:"business",flipId:"",propertyId:"",amount:"",payee:"",notes:"",receiptImg:null,receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null,receiptDirty:false};
   const blankJob = {date:tod(),customer:"",phone:"",address:"",jobType:"Junk Removal",amount:"",paymentMethod:"Cash",notes:""};
   const blankAsset = {date:tod(),name:"",vendor:"",cost:"",notes:"Depreciable asset -- consult accountant re: Section 179"};
   const blankTrip = {date:tod(),desc:"",startOdometer:"",endOdometer:"",miles:"",purpose:"Business",notes:""};
@@ -568,11 +579,27 @@ function App() {
       setReceiptData(fullData);applyReceiptData(fullData,scanTarget);setReceiptState("review");
     }catch(err){console.error("Receipt scan error:",err);setScanError(err.message||"Receipt scan failed.");setReceiptState("error");}
   };
-  const handleFileInput=(e)=>{const file=e.target.files?.[0];if(file)scanReceipt(file);};
+  // Filing a receipt against an expense that already has its details: no AI
+  // call, no overwriting the fields the user already entered, and it works
+  // without an API key.
+  const attachReceiptOnly=async(file)=>{
+    try{
+      const b64=await toBase64(file);
+      const isPdf=file.type==="application/pdf";
+      setExpForm(f=>({...f,receiptB64:b64,receiptMediaType:isPdf?"application/pdf":(file.type||"image/jpeg"),
+                      receiptIsPdf:isPdf,receiptFileName:file.name,receiptImg:null,receiptDirty:true}));
+      setScanError("");
+    }catch(err){ console.error("Attach receipt:",err); setScanError("Could not read that file."); }
+  };
+  const handleFileInput=(e)=>{
+    const file=e.target.files&&e.target.files[0];
+    if(file){ if(receiptMode==="attach") attachReceiptOnly(file); else scanReceipt(file); }
+    e.target.value="";
+  };
   const applyReceiptData=useCallback((data,target)=>{
     if(!data)return;
     if(data.vendor)addVendor(data.vendor);
-    setExpForm(f=>({...f,date:data.date||tod(),desc:data.description||"",amount:data.amount||"",category:data.category||"Fuel",payee:data.vendor||"",notes:data.notes||"",receiptB64:data.b64||null,receiptMediaType:data.mediaType||null,receiptIsPdf:data.isPdf||false,receiptFileName:data.fileName||null,type:"business"}));
+    setExpForm(f=>({...f,date:data.date||tod(),desc:data.description||"",amount:data.amount||"",category:data.category||"Fuel",payee:data.vendor||"",notes:data.notes||"",receiptB64:data.b64||null,receiptMediaType:data.mediaType||null,receiptIsPdf:data.isPdf||false,receiptFileName:data.fileName||null,receiptDirty:true,type:"business"}));
   },[scanTarget,vendors]);
 
   // -- Statement import ------------------------------------------------------
@@ -725,7 +752,28 @@ function App() {
   const deleteJob=async(id)=>{try{await sb.remove("income",id);}catch(e){console.error(e);}setIncome(p=>p.filter(i=>i.id!==id));};
   const deleteAsset=async(id)=>{try{await sb.remove("assets",id);}catch(e){console.error(e);}setAssets(p=>p.filter(a=>a.id!==id));};
   const deleteTrip=async(id)=>{try{await sb.remove("trips",id);}catch(e){console.error(e);}setTrips(p=>p.filter(t=>t.id!==id));};
-  const startEditExpense=(e)=>{setEditingId(e.id);setExpForm({date:e.date,desc:e.desc,category:e.category,type:e.type,flipId:e.flipId||"",propertyId:e.propertyId||"",amount:String(e.amount),payee:e.payee||"",notes:e.notes||"",receiptImg:e.receiptImg||null,receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,receiptFileName:e.receiptFileName||null});setModal("expense");};
+  const startEditExpense=async(e)=>{
+    setEditingId(e.id);
+    setExpForm({date:e.date,desc:e.desc,category:e.category,type:e.type,flipId:e.flipId||"",propertyId:e.propertyId||"",
+      amount:String(e.amount),payee:e.payee||"",notes:e.notes||"",receiptImg:e.receiptImg||null,
+      receiptB64:e.receiptB64||null,receiptMediaType:e.receiptMediaType||null,receiptIsPdf:e.receiptIsPdf||false,
+      receiptFileName:e.receiptFileName||null,receiptDirty:false});
+    setReceiptMode("attach"); setReceiptState("idle"); setReceiptData(null); setScanError("");
+    setModal("expense");
+    // The list query leaves the image out, so pull it in for display. A save
+    // won't touch the receipt columns either way unless it's been changed.
+    if(e.receiptFileName&&!e.receiptB64){
+      try{
+        const rows=await sb.select("expenses",`select=receipt_b64,receipt_media_type,receipt_is_pdf&id=eq.${e.id}`);
+        const r=rows&&rows[0];
+        if(r&&r.receipt_b64){
+          const full={...e,receiptB64:r.receipt_b64,receiptMediaType:r.receipt_media_type,receiptIsPdf:r.receipt_is_pdf||false};
+          setExpenses(p=>p.map(x=>x.id===e.id?full:x));
+          setExpForm(f=>f.receiptDirty?f:{...f,receiptB64:r.receipt_b64,receiptMediaType:r.receipt_media_type,receiptIsPdf:r.receipt_is_pdf||false});
+        }
+      }catch(err){ console.error("Receipt load:",err); }
+    }
+  };
   const startEditJob=(i)=>{setEditingId(i.id);setJobForm({date:i.date,customer:i.customer,phone:i.phone||"",address:i.address||"",jobType:i.jobType,amount:String(i.amount),paymentMethod:i.paymentMethod,notes:i.notes||""});setModal("job");};
   const startEditAsset=(a)=>{setEditingId(a.id);setAssetForm({date:a.date,name:a.name,vendor:a.vendor||"",cost:String(a.cost),notes:a.notes||""});setModal("asset");};
   const startEditTrip=(t)=>{setEditingId(t.id);setTripForm({date:t.date,desc:t.desc,startOdometer:t.startOdometer||"",endOdometer:t.endOdometer||"",miles:String(t.miles),purpose:t.purpose||"Business",notes:t.notes||""});setModal("trip");};
@@ -756,9 +804,34 @@ function App() {
     const id=editingId||"exp_"+Date.now();
     const rec={id,date:expForm.date,desc:expForm.desc,category:expForm.category,type:"business",flipId:null,propertyId:null,amount:parseFloat(expForm.amount),payee:expForm.payee||"",notes:expForm.notes||"",receiptImg:null,receiptB64:expForm.receiptB64||null,receiptMediaType:expForm.receiptMediaType||null,receiptIsPdf:expForm.receiptIsPdf||false,receiptFileName:expForm.receiptFileName||null};
     if(expForm.payee)addVendor(expForm.payee);
-    try{await sb.upsert("expenses",fromExpense(rec));}catch(e){console.error(e);}
-    if(editingId){setExpenses(p=>p.map(e=>e.id===editingId?{...e,...rec}:e));}else{setExpenses(p=>[rec,...p]);}
-    setExpForm(blankExp);setEditingId(null);setModal(null);
+    try{
+      if(editingId){
+        // Send only what was edited. The receipt columns are included solely
+        // when the receipt itself changed, so an unloaded image is never
+        // overwritten with a blank one.
+        const patch={date:rec.date,description:rec.desc,category:rec.category,type:rec.type,
+                     flip_id:null,property_id:null,amount:rec.amount,payee:rec.payee||null,notes:rec.notes||null};
+        if(expForm.receiptDirty) Object.assign(patch,{
+          receipt_b64:rec.receiptB64||null,receipt_media_type:rec.receiptMediaType||null,
+          receipt_is_pdf:rec.receiptIsPdf||false,receipt_file_name:rec.receiptFileName||null});
+        await sb.update("expenses",editingId,patch);
+      } else {
+        await sb.upsert("expenses",fromExpense(rec));
+      }
+    }catch(e){console.error("Save expense:",e);}
+    if(editingId){
+      setExpenses(p=>p.map(e=>{
+        if(e.id!==editingId) return e;
+        const merged={...e,...rec};
+        // Mirror the save: an untouched receipt keeps whatever the row already had.
+        if(!expForm.receiptDirty){
+          merged.receiptB64=e.receiptB64; merged.receiptMediaType=e.receiptMediaType;
+          merged.receiptIsPdf=e.receiptIsPdf; merged.receiptFileName=e.receiptFileName;
+        }
+        return merged;
+      }));
+    } else { setExpenses(p=>[rec,...p]); }
+    setExpForm(blankExp);setEditingId(null);setModal(null);setReceiptMode("scan");
   };
   const saveJob=async()=>{
     if(!jobForm.customer||!jobForm.amount)return;
@@ -1071,7 +1144,7 @@ function App() {
                 {haulingTab==="leads"&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
                 {haulingTab==="scheduled"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
                 {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",background:C.purple,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>}
-                {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
+                {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
                 {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setModal("startTrip");}}>▶ Start Trip</button>}
                 {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Manual</button>}
                 {haulingTab==="mileage"&&activeTrip&&<button style={{...S.btn,flex:"none",background:C.red,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}}>■ End Trip</button>}
@@ -1312,7 +1385,7 @@ function App() {
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
-                              {e.receiptB64&&<span style={{fontSize:"12px"}}>🧾</span>}
+                              {hasReceipt(e)&&<span style={{fontSize:"12px"}}>🧾</span>}
                               <div style={{fontWeight:"600",fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.desc||"—"}</div>
                             </div>
                             <div style={{display:"flex",gap:"6px",marginTop:"5px",flexWrap:"wrap",alignItems:"center"}}>
@@ -1332,7 +1405,7 @@ function App() {
                     {filtered.map(e=>(
                       <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{openViewExpense(e);}}>
                         <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
-                        <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
+                        <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{hasReceipt(e)&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                         <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
                         <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{e.payee||"--"}</td>
                         <td style={{...S.td,fontWeight:"700"}}>{fmt(e.amount)}</td>
@@ -1703,7 +1776,7 @@ function App() {
                         return(
                           <tr key={e.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{openViewExpense(e);}}>
                             <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(e.date)}</td>
-                            <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{e.receiptB64&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
+                            <td style={S.td}><div style={{display:"flex",alignItems:"center",gap:"5px"}}>{hasReceipt(e)&&<span>🧾</span>}<div><div>{e.desc}</div>{e.notes&&<div style={{fontSize:"11px",color:C.muted}}>{e.notes}</div>}</div></div></td>
                             <td style={S.td}><span style={S.badge(C.blue)}>{e.category}</span></td>
                             <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{e.payee||"--"}</td>
                             <td style={{...S.td,fontWeight:"700"}}>{fmt(e.amount)}</td>
@@ -1778,7 +1851,7 @@ function App() {
                 <span style={{fontSize:"22px"}}>🚛</span><div><div>Hauling Job</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Junk removal, estate cleanout</div></div>
               </button>
               <button style={{...S.btn,background:C.blue,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
-                onClick={()=>{setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setExpModalContext(null);setEditingId(null);setModal("expense");}}>
+                onClick={()=>{setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);setEditingId(null);setModal("expense");}}>
                 <span style={{fontSize:"22px"}}>🧾</span><div><div>Expense</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Fuel, dump fees, supplies, etc.</div></div>
               </button>
               <button style={{...S.btn,background:C.purple,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
@@ -1824,7 +1897,7 @@ function App() {
               </div>
               {e.notes&&<div style={{background:C.bg,borderRadius:"8px",padding:"12px",marginBottom:"14px"}}><div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>Notes</div><div style={{fontSize:"13px"}}>{e.notes}</div></div>}
               <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"8px"}}>Receipt</div>
-              {(e.receiptB64||e.receiptImg)?(e.receiptIsPdf?<PdfViewer b64={e.receiptB64}/>:<div><img src={imgSrc} alt="Receipt" style={{width:"100%",borderRadius:"10px",border:`1px solid ${C.border}`,display:"block",cursor:"zoom-in"}} onClick={()=>window.open(imgSrc,"_blank")}/><div style={{fontSize:"11px",color:C.muted,marginTop:"6px",textAlign:"center"}}>Tap to open full size</div></div>):<div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:"10px",padding:"20px",textAlign:"center",color:C.muted,fontSize:"12px"}}>No receipt attached</div>}
+              {(e.receiptB64||e.receiptImg)?(e.receiptIsPdf?<PdfViewer b64={e.receiptB64}/>:<div><img src={imgSrc} alt="Receipt" style={{width:"100%",borderRadius:"10px",border:`1px solid ${C.border}`,display:"block",cursor:"zoom-in"}} onClick={()=>window.open(imgSrc,"_blank")}/><div style={{fontSize:"11px",color:C.muted,marginTop:"6px",textAlign:"center"}}>Tap to open full size</div></div>):<div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:"10px",padding:"20px",textAlign:"center",color:C.muted,fontSize:"12px"}}>{hasReceipt(e)?"Loading receipt...":"No receipt attached"}</div>}
               <div style={{...S.br,marginTop:"20px"}}>
                 <button style={{...S.btn,background:C.blue}} onClick={()=>{setModal(null);startEditExpense(e);}}>Edit</button>
                 <button style={{...S.btn,background:C.red}} onClick={()=>{deleteExpense(e.id);setModal(null);}}>Delete</button>
@@ -1903,16 +1976,46 @@ function App() {
           <div style={S.mbox}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"3px"}}>
               <div style={S.mt}>{editingId?"Edit Expense":"Log Expense"}</div>
-              <button onClick={()=>{setModal(null);setEditingId(null);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setExpModalContext(null);}} style={S.xBtn}>×</button>
+              <button onClick={()=>{setModal(null);setEditingId(null);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);}} style={S.xBtn}>×</button>
             </div>
-            <div style={S.ms}>Attach a receipt to auto-fill the fields</div>
+            <div style={S.ms}>{editingId?"Update the details, or file a receipt against this expense":"Attach a receipt to auto-fill the fields"}</div>
+
+            {/* Editing: file a receipt without touching the details already entered. */}
+            {editingId&&(
+              <div style={{marginBottom:"16px"}}>
+                <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"6px"}}>Receipt</div>
+                {expForm.receiptB64?(
+                  <div style={{background:C.bg,border:`1px solid ${C.purple}44`,borderRadius:"8px",padding:"10px"}}>
+                    {expForm.receiptIsPdf?<PdfViewer b64={expForm.receiptB64}/>:(
+                      <img src={`data:${expForm.receiptMediaType};base64,${expForm.receiptB64}`} alt="Receipt"
+                        style={{width:"100%",borderRadius:"6px",maxHeight:"180px",objectFit:"contain",background:"#fff",cursor:"zoom-in"}}
+                        onClick={()=>window.open(`data:${expForm.receiptMediaType};base64,${expForm.receiptB64}`,"_blank")}/>
+                    )}
+                    <div style={{display:"flex",gap:"6px",marginTop:"8px",alignItems:"center"}}>
+                      <button style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px"}} onClick={()=>{setReceiptMode("attach");if(fileRef.current)fileRef.current.click();}}>Replace</button>
+                      <button style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px",color:C.red,borderColor:C.red+"44"}}
+                        onClick={()=>setExpForm(f=>({...f,receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null,receiptDirty:true}))}>Remove</button>
+                      {expForm.receiptDirty&&<span style={{fontSize:"10px",color:C.yellow}}>unsaved</span>}
+                    </div>
+                  </div>
+                ):expForm.receiptFileName?(
+                  <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:"8px",padding:"14px",textAlign:"center",color:C.muted,fontSize:"12px"}}>Loading receipt...</div>
+                ):(
+                  <div style={{display:"flex",gap:"8px"}}>
+                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setReceiptMode("attach");if(fileRef.current)fileRef.current.click();}}>📎 Attach Receipt</button>
+                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setReceiptMode("attach");if(cameraRef.current)cameraRef.current.click();}}>📷 Take Photo</button>
+                  </div>
+                )}
+                {scanError&&<div style={{color:C.red,fontSize:"11px",marginTop:"6px"}}>{scanError}</div>}
+              </div>
+            )}
 
             {!editingId&&(
               <div style={{marginBottom:"16px"}}>
                 {receiptState==="idle"&&(
                   <div style={{display:"flex",gap:"8px"}}>
-                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setScanTarget("expense");fileRef.current?.click();}}>📎 Attach Receipt</button>
-                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setScanTarget("expense");cameraRef.current?.click();}}>📷 Take Photo</button>
+                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setScanTarget("expense");setReceiptMode("scan");fileRef.current?.click();}}>📎 Attach Receipt</button>
+                    <button style={{flex:1,padding:"10px 8px",border:`1px dashed ${C.purple}`,borderRadius:"8px",background:C.purpleD,color:C.purple,cursor:"pointer",fontSize:"11px",fontWeight:"700"}} onClick={()=>{setScanTarget("expense");setReceiptMode("scan");cameraRef.current?.click();}}>📷 Take Photo</button>
                   </div>
                 )}
                 {receiptState==="scanning"&&<div style={{textAlign:"center",padding:"16px",background:C.purpleD,border:`1px solid ${C.purple}44`,borderRadius:"8px"}}><div style={{fontSize:"22px",marginBottom:"6px"}}>⏳</div><div style={{fontWeight:"700",fontSize:"13px",color:C.purple}}>Reading receipt...</div></div>}
@@ -1949,8 +2052,7 @@ function App() {
             <VendorInput value={expForm.payee} onChange={v=>setExpForm(f=>({...f,payee:v}))} vendors={vendors} addVendor={addVendor}/>
             <label style={S.lbl}>Notes</label>
             <input style={S.inp} placeholder="Optional" value={expForm.notes} onChange={e=>setExpForm(f=>({...f,notes:e.target.value}))}/>
-            {editingId&&expForm.receiptB64&&<div style={{marginTop:"10px"}}>{expForm.receiptIsPdf?<PdfViewer b64={expForm.receiptB64}/>:<img src={`data:${expForm.receiptMediaType};base64,${expForm.receiptB64}`} alt="Receipt" style={{width:"100%",borderRadius:"6px",maxHeight:"160px",objectFit:"contain",background:"#fff"}}/>}</div>}
-            <div style={S.br}><button style={S.btn} onClick={saveExpense}>{editingId?"Update Expense":"Save Expense"}</button><button style={S.bgh} onClick={()=>{setModal(null);setEditingId(null);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setExpModalContext(null);}}>Cancel</button></div>
+            <div style={S.br}><button style={S.btn} onClick={saveExpense}>{editingId?"Update Expense":"Save Expense"}</button><button style={S.bgh} onClick={()=>{setModal(null);setEditingId(null);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);}}>Cancel</button></div>
           </div>
         </div>
       )}
@@ -2299,7 +2401,7 @@ function App() {
                             <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
                               <span style={S.badge(typeCol)}>{typeLabel}</span>
                               <span style={{fontWeight:"600",fontSize:"13px"}}>{e.desc}</span>
-                              {e.receiptB64&&<span style={{fontSize:"11px"}}>🧾</span>}
+                              {hasReceipt(e)&&<span style={{fontSize:"11px"}}>🧾</span>}
                             </div>
                             <div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>{fmtDate(e.date)} · {e.category} · {e.payee||"--"}</div>
                           </div>
@@ -2360,7 +2462,7 @@ function App() {
                 <div><div>Hauling Job</div><div style={{fontSize:"11px",fontWeight:"400",color:C.muted,marginTop:"2px"}}>Junk removal or estate cleanout</div></div>
               </button>
               <button style={{padding:"16px",border:`1px solid ${C.blue}44`,borderRadius:"10px",background:C.blueD,color:C.blue,cursor:"pointer",fontSize:"14px",fontWeight:"700",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
-                onClick={()=>{setQuickNew(false);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setExpModalContext(null);setEditingId(null);setModal("expense");}}>
+                onClick={()=>{setQuickNew(false);setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);setEditingId(null);setModal("expense");}}>
                 <span style={{fontSize:"24px"}}>📋</span>
                 <div><div>Expense</div><div style={{fontSize:"11px",fontWeight:"400",color:C.muted,marginTop:"2px"}}>Fuel, dump fees, supplies, etc.</div></div>
               </button>
