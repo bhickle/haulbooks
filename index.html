@@ -151,9 +151,11 @@ const MERCHANT_RULES = [
   [/VISTAPRINT/, "VistaPrint", "Marketing"],
   [/\bWIX\b/, "Wix", "Marketing"],
   [/CAPCUT/, "CapCut", "Marketing"],
+  [/FACEBK|FACEBOOK|META PLATFORMS/, "Facebook Ads", "Marketing"],
   [/STATE FARM/, "State Farm", "Truck Insurance"],
-  [/NEXT INSURANCE/, "Next Insurance", "Business Insurance"],
+  [/NEXT INSUR/, "Next Insurance", "Business Insurance"],   // PNC writes "NEXT INSUR GEN L"
   [/PA DRIVER|VEHICLE SERV/, "PA Driver & Vehicle Services", "Registration & Tags"],
+  [/WASTE TRANS SAFETY/, "PA DEP", "Licenses & Fees"],
   [/COMM OF PA/, "Commonwealth of PA", "Licenses & Fees"],
   [/XFINITY|COMCAST/, "Xfinity", ""],   // split between Internet and Phone -- ask
 ];
@@ -165,6 +167,11 @@ const ISSUER_CAT_MAP = {
   "Bills & Utilities":"Utilities", "Professional Services":"Office / Admin",
   "Personal":"", "Food & Drink":"", "Entertainment":"", "Groceries":"", "Health & Wellness":"",
 };
+
+// Lines that are the card being paid off, or a credit back to it. Needed because
+// some issuers (PNC) export no transaction-type column at all.
+const PAYMENT_RE = /THANK YOU FOR YOUR PMT|ONLINE CREDIT CARD PMT|AUTOMATIC PAYMENT|PAYMENT\s*-?\s*THANK|AUTOPAY|^\s*PAYMENT\b/i;
+const CREDIT_RE  = /CASH ?BACK|REWARD|REBATE|STATEMENT CREDIT/i;
 
 const htmlUnescape = (s) => { const t=document.createElement("textarea"); t.innerHTML=s||""; return t.value; };
 // Strip store numbers and punctuation so "LOWES #00120*" and "LOWES #02247*" match.
@@ -237,6 +244,24 @@ function readStatement(text){
     });
   }
   if(!out.length) throw new Error("No readable transactions found in that file.");
+
+  // Issuers disagree on which way a purchase points: Chase writes purchases
+  // negative and payments positive, PNC does the exact opposite. Guessing wrong
+  // would offer the card payments as expenses, so work it out per file. A
+  // payment always has the opposite sign to a purchase; if there are none to
+  // learn from, fall back to the majority, since most lines are purchases.
+  const pays=out.filter(t=>PAYMENT_RE.test(t.desc));
+  let purchaseSign=0;
+  if(pays.length){
+    const s=Math.sign(pays.reduce((a,t)=>a+t.amount,0));
+    if(s) purchaseSign=-s;
+  }
+  if(!purchaseSign){
+    const npos=out.filter(t=>t.amount>0).length;
+    purchaseSign = npos*2>=out.length ? 1 : -1;
+  }
+  // Normalise to "a purchase is negative", which is what everything downstream assumes.
+  if(purchaseSign>0) out.forEach(t=>{ t.amount = -t.amount; });
   return out;
 }
 
@@ -249,8 +274,12 @@ const fingerprintOf = (t, occurrence) =>
 // What kind of line is this? Only 'expense' is a real cost.
 function classifyLine(t){
   const ty=(t.type||"").toLowerCase();
-  if(ty.includes("payment")) return "payment";     // paying the card off
-  if(ty.includes("reversal")) return "reversal";   // e.g. a returned payment -- negative but NOT a cost
+  // Description first: it's the only signal when the export has no type column.
+  // Checked before the type so "Returned Payment" still reads as a reversal.
+  if(ty.includes("reversal")) return "reversal";   // negative but NOT a cost
+  if(PAYMENT_RE.test(t.desc)) return "payment";    // paying the card off
+  if(CREDIT_RE.test(t.desc)) return "credit";      // cash-back / rewards credit
+  if(ty.includes("payment")) return "payment";
   if(ty.includes("return")||ty.includes("refund")) return "refund";
   if(t.amount>0) return "credit";
   return "expense";
