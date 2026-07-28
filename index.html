@@ -546,12 +546,15 @@ function buildReceiptPdf(JsPDF, job, biz){
   doc.setTextColor(22,101,52); doc.setFontSize(10);
   doc.text(`PAID  ·  ${job.paymentMethod||"Cash"}`, W-M-12, y+1, {align:"right"});
 
-  // Footer
+  // Footer: the note on the left, how to reach him on the right. The tagline
+  // deliberately isn't here -- it's already part of the logo at the top, and
+  // repeating it just read as filler.
   const fy=doc.internal.pageSize.getHeight()-64;
   doc.setDrawColor(line); doc.line(M,fy-18,W-M,fy-18);
   doc.setFont("helvetica","normal"); doc.setFontSize(9.5); doc.setTextColor(soft);
   if(biz.footerNote) doc.text(biz.footerNote,M,fy);
-  if(biz.tagline) doc.text(biz.tagline,M,fy+13);
+  const contact=[biz.phone?fmtPhone(biz.phone):"",biz.email||""].filter(Boolean).join("   ·   ");
+  if(contact) doc.text(contact,W-M,fy,{align:"right"});
   return doc;
 }
 
@@ -2111,7 +2114,7 @@ function App() {
             {/* -- BUSINESS DETAILS (used on customer receipts) -- */}
             <div style={{...S.card,marginBottom:"16px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px",flexWrap:"wrap",gap:"8px"}}>
-                <div style={{fontWeight:"700",fontSize:"13px"}}>🧾 Business Details</div>
+                <div><div style={{fontWeight:"700",fontSize:"13px"}}>🧾 Business Details</div><div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>Printed on customer receipts. The logo already carries the tagline.</div></div>
                 {!bizForm&&<button style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px",color:C.blue,borderColor:C.blue+"44"}} onClick={()=>setBizForm({...biz})}>Edit</button>}
               </div>
               <div style={{background:"#000",borderRadius:"8px",padding:"12px",marginBottom:"12px",textAlign:"center"}}>
@@ -2120,7 +2123,6 @@ function App() {
               {!bizForm?(
                 <div style={{fontSize:"12px",color:C.muted,lineHeight:1.8}}>
                   <div style={{color:C.text,fontWeight:"600"}}>{biz.name}</div>
-                  {biz.tagline&&<div>{biz.tagline}</div>}
                   {biz.address&&<div style={{whiteSpace:"pre-line"}}>{biz.address}</div>}
                   {biz.phone?<div>{fmtPhone(biz.phone)}</div>:<div style={{color:C.yellow}}>No phone set — it won't appear on receipts</div>}
                   {biz.email?<div>{biz.email}</div>:<div style={{color:C.yellow}}>No email set — it won't appear on receipts</div>}
@@ -2129,8 +2131,6 @@ function App() {
                 <>
                   <label style={S.lbl}>Business Name</label>
                   <input style={S.inp} value={bizForm.name} onChange={e=>setBizForm(f=>({...f,name:e.target.value}))}/>
-                  <label style={S.lbl}>Tagline</label>
-                  <input style={S.inp} value={bizForm.tagline} onChange={e=>setBizForm(f=>({...f,tagline:e.target.value}))}/>
                   <div style={S.row}>
                     <div style={{flex:1}}><label style={S.lbl}>Phone</label><input style={S.inp} placeholder="724-555-0000" value={bizForm.phone} onChange={e=>setBizForm(f=>({...f,phone:e.target.value}))}/></div>
                     <div style={{flex:1}}><label style={S.lbl}>Email</label><input style={S.inp} placeholder="you@example.com" value={bizForm.email} onChange={e=>setBizForm(f=>({...f,email:e.target.value}))}/></div>
