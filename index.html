@@ -120,6 +120,142 @@ const tod = () => new Date().toISOString().split("T")[0];
 const monthLabel = (m) => { const [y,mo]=m.split("-"); return new Date(y,mo-1).toLocaleString("en-US",{month:"long",year:"numeric"}); };
 
 // -----------------------------------------------------------------------------
+// STATEMENT IMPORT -- parsing a card-statement CSV into reviewable rows
+// -----------------------------------------------------------------------------
+// Card descriptors are messy ("LOWES #00120*", "NOBLEENVIRO/WSLF"). These rules
+// map them to the clean payee + category already used elsewhere in the app.
+// Checked before payee history, so a known merchant always wins.
+const MERCHANT_RULES = [
+  [/WESTMORELAND|NOBLEENVIRO|WSLF/, "Westmoreland Sanitary Landfill", "Dump Fees"],
+  [/SHEETZ/, "Sheetz", "Fuel"],
+  [/SUNOCO/, "Sunoco", "Fuel"],
+  [/PILOT/, "Pilot", "Fuel"],
+  [/7-ELEVEN|7 ELEVEN|\bBP\b/, "BP / 7-Eleven", "Fuel"],
+  [/\bGIANT\b/, "Giant", "Fuel"],
+  [/\bEXXON|MOBIL|SHELL\b/, "Gas Station", "Fuel"],
+  [/LOWES|LOWE'S/, "Lowe's", "Tools & Equipment"],
+  [/HOME DEPOT/, "Home Depot", "Tools & Equipment"],
+  [/HARBOR FREIGHT/, "Harbor Freight", "Tools & Equipment"],
+  [/DEVORE HARDWARE/, "Devore Hardware", "Tools & Equipment"],
+  [/HANNA/, "Hanna's Wholesale", "Tools & Equipment"],
+  [/AMAZON|AMZN/, "Amazon", "Tools & Equipment"],
+  [/COSTCO/, "Costco", "Tools & Equipment"],
+  [/ADVANCE AUTO|AUTOZONE|NAPA/, "Advance Auto Parts", "Truck Maintenance"],
+  [/MARSH TIRE/, "Marsh Tire", "Truck Maintenance"],
+  [/GERRY RAYMOND FORD/, "Gerry Raymond Ford", "Truck Maintenance"],
+  [/B & B TRUCK|B AND B TRUCK/, "B & B Truck and Equipment", "Truck Maintenance"],
+  [/ZIEBART/, "Ziebart", "Truck Maintenance"],
+  [/AUTO WASH|CAR WASH|GROOM & VROOM/, "Auto Wash", "Vehicle Wash & Road Services"],
+  [/INTUIT|QBOOKS|QUICKBOOKS/, "Intuit", "Office / Admin"],
+  [/USPS|UPS STORE|FEDEX/, "Shipping", "Office / Admin"],
+  [/VISTAPRINT/, "VistaPrint", "Marketing"],
+  [/\bWIX\b/, "Wix", "Marketing"],
+  [/CAPCUT/, "CapCut", "Marketing"],
+  [/STATE FARM/, "State Farm", "Truck Insurance"],
+  [/NEXT INSURANCE/, "Next Insurance", "Business Insurance"],
+  [/PA DRIVER|VEHICLE SERV/, "PA Driver & Vehicle Services", "Registration & Tags"],
+  [/COMM OF PA/, "Commonwealth of PA", "Licenses & Fees"],
+  [/XFINITY|COMCAST/, "Xfinity", ""],   // split between Internet and Phone -- ask
+];
+// Fallback only: the issuer's own category, mapped to ours. "Food & Drink" is
+// deliberately absent -- there is no meals category, so those get flagged instead.
+const ISSUER_CAT_MAP = {
+  "Gas":"Fuel", "Automotive":"Truck Maintenance", "Office & Shipping":"Office / Admin",
+  "Repair & Maintenance":"Tools & Equipment", "Merchandise & Inventory":"Tools & Equipment",
+  "Bills & Utilities":"Utilities", "Professional Services":"Office / Admin",
+  "Personal":"", "Food & Drink":"", "Entertainment":"", "Groceries":"", "Health & Wellness":"",
+};
+
+const htmlUnescape = (s) => { const t=document.createElement("textarea"); t.innerHTML=s||""; return t.value; };
+// Strip store numbers and punctuation so "LOWES #00120*" and "LOWES #02247*" match.
+const normMerchant = (d) => htmlUnescape(d||"").toUpperCase()
+  .replace(/[*#_\/]/g," ").replace(/\b\d{3,}\b/g," ").replace(/\s+/g," ").trim();
+// Human-readable fallback name when no rule or history matches the descriptor.
+const prettyMerchant = (d) => htmlUnescape(d||"")
+  .replace(/^\s*(SQ|TST|SP|PY|PAYPAL|POS)\s*\*\s*/i,"")
+  .replace(/[*#_]/g," ").replace(/\b\d{3,}\b/g," ").replace(/\s+/g," ").trim()
+  .toLowerCase().replace(/\b[a-z]/g,c=>c.toUpperCase());
+
+const stmtDate = (s) => {
+  s=(s||"").trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  return m ? `${m[3]}-${String(m[1]).padStart(2,"0")}-${String(m[2]).padStart(2,"0")}` : "";
+};
+const stmtAmount = (s) => {
+  const raw=String(s==null?"":s).trim();
+  const paren=/^\(.*\)$/.test(raw);
+  const n=parseFloat(raw.replace(/[^0-9.\-]/g,""));
+  if(isNaN(n)) return NaN;
+  return paren ? -Math.abs(n) : n;
+};
+
+// Minimal RFC-4180 CSV reader (handles quoted fields containing commas/newlines).
+function parseCsvText(text){
+  const rows=[]; let row=[], cur="", q=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; }
+      else cur+=c;
+    } else if(c==='"'){ q=true; }
+    else if(c===","){ row.push(cur); cur=""; }
+    else if(c==="\n"){ row.push(cur); rows.push(row); row=[]; cur=""; }
+    else if(c!=="\r"){ cur+=c; }
+  }
+  if(cur!==""||row.length){ row.push(cur); rows.push(row); }
+  return rows.filter(r=>r.some(x=>String(x).trim()!==""));
+}
+
+// Turn raw CSV text into normalized statement lines. Throws on unrecognized files.
+function readStatement(text){
+  const grid=parseCsvText(text);
+  if(grid.length<2) throw new Error("That file has no transactions in it.");
+  const head=grid[0].map(h=>h.trim().toLowerCase());
+  const find=(...names)=>{ for(const n of names){ const i=head.indexOf(n); if(i>=0) return i; } return -1; };
+  const iDate=find("transaction date","trans date","date","posted date");
+  const iPost=find("post date","posting date");
+  const iDesc=find("description","payee","merchant","name");
+  const iAmt =find("amount","debit");
+  const iType=find("type","transaction type");
+  const iCat =find("category");
+  const iCard=find("card","card no.","account");
+  if(iDate<0||iDesc<0||iAmt<0) throw new Error("Could not find Date, Description and Amount columns. Export the CSV from your card issuer without changing the headers.");
+  const out=[];
+  for(let r=1;r<grid.length;r++){
+    const g=grid[r];
+    const date=stmtDate(g[iDate]); const amount=stmtAmount(g[iAmt]);
+    if(!date||isNaN(amount)) continue;
+    out.push({
+      date, postDate: iPost>=0?stmtDate(g[iPost]):"",
+      desc: htmlUnescape((g[iDesc]||"").trim()),
+      amount,
+      type: iType>=0?(g[iType]||"").trim():"",
+      issuerCat: iCat>=0?(g[iCat]||"").trim():"",
+      card: iCard>=0?(g[iCard]||"").trim():"",
+    });
+  }
+  if(!out.length) throw new Error("No readable transactions found in that file.");
+  return out;
+}
+
+// Stable identity for a statement line. The trailing occurrence index keeps two
+// genuinely separate but identical charges (same day, merchant and amount) apart,
+// and stays stable across re-downloads because it only counts within its own group.
+const fingerprintOf = (t, occurrence) =>
+  [t.card||"", t.date, t.postDate||"", normMerchant(t.desc), t.amount.toFixed(2), occurrence].join("|");
+
+// What kind of line is this? Only 'expense' is a real cost.
+function classifyLine(t){
+  const ty=(t.type||"").toLowerCase();
+  if(ty.includes("payment")) return "payment";     // paying the card off
+  if(ty.includes("reversal")) return "reversal";   // e.g. a returned payment -- negative but NOT a cost
+  if(ty.includes("return")||ty.includes("refund")) return "refund";
+  if(t.amount>0) return "credit";
+  return "expense";
+}
+
+// -----------------------------------------------------------------------------
 // SEED DATA (test mode -- minimal)
 // -----------------------------------------------------------------------------
 const SEED_EXPENSES = [
@@ -170,6 +306,7 @@ const toTrip = r => ({id:r.id,date:r.date,desc:r.description,startOdometer:r.sta
 const fromTrip = t => ({id:t.id,date:t.date,description:t.desc,start_odometer:t.startOdometer||null,end_odometer:t.endOdometer||null,miles:t.miles,purpose:t.purpose||"Business",notes:t.notes||null});
 const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||""});
 const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null});
+const fromLedger = r => ({fingerprint:r.fingerprint,card:r.card||null,txn_date:r.date,post_date:r.postDate||null,description:r.desc,amount:r.amount,txn_type:r.type||null,decision:r.decision,skip_reason:r.skipReason||null,expense_id:r.expenseId||null});
 
 
 // -- VendorInput (defined outside App so React doesn't remount on every render) --
@@ -307,7 +444,17 @@ function App() {
   const [receiptData, setReceiptData] = useState(null);
   const [scanError, setScanError] = useState("");
   const [scanTarget, setScanTarget] = useState("expense");
-  const fileRef = useRef(); const cameraRef = useRef();
+  const fileRef = useRef(); const cameraRef = useRef(); const stmtRef = useRef();
+
+  // -- Statement import state
+  const [ledger, setLedger] = useState(new Set());   // fingerprints already dealt with
+  const [importState, setImportState] = useState("idle"); // idle | review | saving | done
+  const [importRows, setImportRows] = useState([]);
+  const [importErr, setImportErr] = useState("");
+  const [importFile, setImportFile] = useState("");
+  const [importSkipped, setImportSkipped] = useState(0);  // lines hidden because already handled
+  const [showHandled, setShowHandled] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   // -- Form state
   const blankExp = {date:tod(),desc:"",category:"Fuel",type:"business",flipId:"",propertyId:"",amount:"",payee:"",notes:"",receiptImg:null,receiptB64:null,receiptMediaType:null,receiptIsPdf:false,receiptFileName:null};
@@ -327,13 +474,14 @@ function App() {
     const load = async () => {
       try {
         const safe = (p) => p.catch(()=>[]);
-        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows] = await Promise.all([
+        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows,ledgerRows] = await Promise.all([
           safe(sb.select("expenses","select=id,date,description,category,type,flip_id,property_id,amount,payee,notes,receipt_media_type,receipt_is_pdf,receipt_file_name&order=date.desc")),
           safe(sb.select("income","order=date.desc")),
           safe(sb.select("assets","order=date.desc")),
           safe(sb.select("trips","order=date.desc")),
           safe(sb.select("vendors","order=name.asc")),
           safe(sb.select("leads","order=date.desc")),
+          safe(sb.select("imported_txns","select=fingerprint")),
         ]);
         setExpenses(expRows.map(toExpense));
         setIncome(incRows.map(toIncome));
@@ -341,6 +489,7 @@ function App() {
         setTrips(tripRows.map(toTrip));
         setVendors(vendorRows.map(r=>r.name));
         setLeads(leadRows.map(toLead));
+        setLedger(new Set(ledgerRows.map(r=>r.fingerprint)));
       } catch(err) {
         setDbError(err.message);
       } finally {
@@ -392,6 +541,109 @@ function App() {
     if(data.vendor)addVendor(data.vendor);
     setExpForm(f=>({...f,date:data.date||tod(),desc:data.description||"",amount:data.amount||"",category:data.category||"Fuel",payee:data.vendor||"",notes:data.notes||"",receiptB64:data.b64||null,receiptMediaType:data.mediaType||null,receiptIsPdf:data.isPdf||false,receiptFileName:data.fileName||null,type:"business"}));
   },[scanTarget,vendors]);
+
+  // -- Statement import ------------------------------------------------------
+  // Turn parsed statement lines into reviewable rows: suggest a payee/category,
+  // work out what each line is, and flag anything already in the books.
+  const buildImportRows = useCallback((lines)=>{
+    // What category has each payee historically been given?
+    const counts={}, display={};
+    expenses.forEach(e=>{
+      const k=normMerchant(e.payee); if(!k) return;
+      counts[k]=counts[k]||{}; counts[k][e.category]=(counts[k][e.category]||0)+1;
+      if(!display[k]) display[k]=e.payee;
+    });
+    const best={};
+    Object.keys(counts).forEach(k=>{
+      const sorted=Object.entries(counts[k]).sort((a,b)=>b[1]-a[1]);
+      // If a payee is split across categories (Xfinity: Internet vs Phone) don't guess.
+      best[k]= sorted.length>1 && sorted[0][1]===sorted[1][1] ? "" : sorted[0][0];
+    });
+    // Multiset of what's already booked, for duplicate detection.
+    const booked={};
+    expenses.forEach(e=>{ const k=e.date+"|"+Math.abs(Number(e.amount)).toFixed(2); booked[k]=(booked[k]||0)+1; });
+
+    const seen={};
+    return lines.map(t=>{
+      const norm=normMerchant(t.desc);
+      const groupKey=[t.card||"",t.date,t.postDate||"",norm,t.amount.toFixed(2)].join("|");
+      const occ=(seen[groupKey]=(seen[groupKey]||0)+1)-1;
+      const fp=fingerprintOf(t,occ);
+      const kind=classifyLine(t);
+
+      let payee="", category="", why="";
+      const rule=MERCHANT_RULES.find(r=>r[0].test(norm));
+      if(rule){ payee=rule[1]; category=rule[2]; why="known merchant"; }
+      if(!category){
+        const hit=Object.keys(best).find(k=>k.length>2&&(norm===k||norm.indexOf(k)>=0||k.indexOf(norm)>=0));
+        if(hit){ payee=payee||display[hit]; category=best[hit]; if(category) why="matches your history"; }
+      }
+      if(!category&&ISSUER_CAT_MAP[t.issuerCat]){ category=ISSUER_CAT_MAP[t.issuerCat]; why="issuer category"; }
+      if(!payee) payee=prettyMerchant(t.desc);
+
+      let status="new", note="", include=(kind==="expense");
+      if(kind==="payment"){ status="payment"; note="Card payment, not an expense"; include=false; }
+      else if(kind==="reversal"){ status="reversal"; note="Reversed payment, not an expense"; include=false; }
+      else if(kind==="refund"||kind==="credit"){ status="refund"; note="Refund - include to subtract it"; include=false; }
+      else {
+        const bk=t.date+"|"+Math.abs(t.amount).toFixed(2);
+        if(booked[bk]>0){ booked[bk]--; status="logged"; note="Already in your expenses"; include=false; }
+        // Nothing we could categorise -- often a personal charge. Left unticked
+        // so it can never be swept into the books without a deliberate choice.
+        else if(!category){ status="needcat"; note="Unrecognised - tick and categorise if it's a business cost"; include=false; }
+      }
+      const handled=ledger.has(fp);
+      if(handled){ status="handled"; note="Imported or excluded previously"; include=false; }
+      return {fp,date:t.date,postDate:t.postDate,desc:t.desc,card:t.card,type:t.type,
+              amount:Math.abs(t.amount),signed:t.amount,kind,payee,category,why,status,note,include,handled};
+    });
+  },[expenses,ledger]);
+
+  const loadStatement=async(file)=>{
+    setImportErr(""); setImportResult(null); setImportFile(file.name); setShowHandled(false);
+    try{
+      const rows=buildImportRows(readStatement(await file.text()));
+      setImportRows(rows);
+      setImportSkipped(rows.filter(r=>r.handled).length);
+      setImportState("review");
+    }catch(err){
+      console.error("Statement import:",err);
+      setImportRows([]); setImportErr(err.message||"Could not read that file."); setImportState("review");
+    }
+  };
+  const handleStatementInput=(e)=>{const f=e.target.files&&e.target.files[0]; if(f)loadStatement(f); e.target.value="";};
+  const setImportRow=(fp,patch)=>setImportRows(p=>p.map(r=>r.fp===fp?{...r,...patch}:r));
+
+  const runImport=async()=>{
+    const chosen=importRows.filter(r=>r.include);
+    setImportState("saving"); setImportErr("");
+    const stamp=Date.now(); const fpToId={};
+    const newExps=chosen.map((r,i)=>{
+      const id="imp_"+stamp+"_"+i; fpToId[r.fp]=id;
+      const signed=(r.kind==="refund"||r.kind==="credit")?-Math.abs(r.amount):Math.abs(r.amount);
+      return {id,date:r.date,desc:r.desc,category:r.category||"Other Business",type:"business",
+              flipId:null,propertyId:null,amount:signed,payee:r.payee||"",
+              notes:"Imported from card statement",receiptImg:null,receiptB64:null,
+              receiptMediaType:null,receiptIsPdf:false,receiptFileName:null};
+    });
+    try{
+      if(newExps.length) await sb.upsert("expenses",newExps.map(fromExpense));
+      // Record every line we showed, so re-importing this statement is a no-op.
+      // Rows already in the ledger are left alone unless deliberately re-included.
+      const toRecord=importRows.filter(r=>!r.handled||r.include).map(r=>({
+        fingerprint:r.fp,card:r.card,date:r.date,postDate:r.postDate,desc:r.desc,
+        amount:r.signed,type:r.type,decision:r.include?"imported":"skipped",
+        skipReason:r.include?null:(r.note||"excluded by user"),expenseId:fpToId[r.fp]||null}));
+      if(toRecord.length) await sb.upsert("imported_txns",toRecord.map(fromLedger));
+      setExpenses(p=>[...newExps,...p]);
+      setLedger(p=>{const n=new Set(p); toRecord.forEach(r=>n.add(r.fingerprint)); return n;});
+      chosen.forEach(r=>{ if(r.payee) addVendor(r.payee); });
+      setImportResult({added:newExps.length,skipped:toRecord.length-newExps.length,
+                       total:newExps.reduce((s,e)=>s+e.amount,0)});
+      setImportState("done");
+    }catch(err){ console.error("Import save:",err); setImportErr(err.message||"Import failed."); setImportState("review"); }
+  };
+  const closeImport=()=>{setModal(null);setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");};
 
   const deleteExpense=async(id)=>{try{await sb.remove("expenses",id);}catch(e){console.error(e);}setExpenses(p=>p.filter(e=>e.id!==id));};
   const deleteJob=async(id)=>{try{await sb.remove("income",id);}catch(e){console.error(e);}setIncome(p=>p.filter(i=>i.id!==id));};
@@ -742,6 +994,7 @@ function App() {
                 {haulingTab==="jobs"&&<button style={{...S.btn,flex:"none",background:C.orange,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setJobForm(blankJob);setEditingId(null);setModal("job");}}>+ Log Job</button>}
                 {haulingTab==="leads"&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
                 {haulingTab==="scheduled"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
+                {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",background:C.purple,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>}
                 {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
                 {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setModal("startTrip");}}>▶ Start Trip</button>}
                 {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Manual</button>}
@@ -963,6 +1216,7 @@ function App() {
               const deductible=filtered.filter(e=>e.category!=="Loan Payment (Principal)").reduce((s,e)=>s+e.amount,0);
               return <>
                 <div style={{display:"flex",flexDirection:"column",gap:"8px",marginBottom:"16px"}}>
+                  {isMobile&&<button style={{...S.btn,background:C.purple,padding:"8px 14px",fontSize:"12px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
                     <DateFilter f={fHaulingExp} setF={setFHaulingExp}/>
                     <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} of {dateFiltered.length} · {fmt(total)}</span>
@@ -1468,6 +1722,7 @@ function App() {
       {/* Hidden file inputs for receipt scan */}
       <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{display:"none"}} onChange={handleFileInput}/>
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFileInput}/>
+      <input ref={stmtRef} type="file" accept=".csv,text/csv,text/plain" style={{display:"none"}} onChange={handleStatementInput}/>
 
       {/* -- VIEW EXPENSE -- */}
       {modal==="viewExpense"&&viewingExpense&&(()=>{
@@ -1623,6 +1878,161 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* -- IMPORT CARD STATEMENT -- */}
+      {modal==="import"&&(()=>{
+        const STATUS={
+          new:      [C.teal,  "New"],
+          needcat:  [C.orange,"Needs category"],
+          logged:   [C.yellow,"Already logged"],
+          refund:   [C.blue,  "Refund"],
+          payment:  [C.muted, "Card payment"],
+          reversal: [C.red,   "Not an expense"],
+          handled:  [C.muted, "Seen before"],
+        };
+        const visible=importRows.filter(r=>showHandled||!r.handled);
+        const chosen=importRows.filter(r=>r.include);
+        const chosenTotal=chosen.reduce((s,r)=>s+((r.kind==="refund"||r.kind==="credit")?-r.amount:r.amount),0);
+        // "Select all" only ticks genuinely new charges -- never payments, refunds,
+        // or lines already in the books, so it can't quietly create duplicates.
+        const selectable=(r)=>r.kind==="expense"&&r.status!=="logged"&&!r.handled;
+        const setAll=(v)=>setImportRows(p=>p.map(r=>{
+          if(!(showHandled||!r.handled)) return r;
+          if(v) return selectable(r)?{...r,include:true}:r;
+          return {...r,include:false};
+        }));
+        return (
+        <div style={S.modal} onClick={e=>e.target===e.currentTarget&&closeImport()}>
+          <div style={{...S.mbox,maxWidth:"940px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"4px"}}>
+              <div>
+                <div style={S.mt}>Import Card Statement</div>
+                <div style={S.ms}>{importFile?importFile:"Drop in a CSV exported from your card issuer"}</div>
+              </div>
+              <button onClick={closeImport} style={S.xBtn}>×</button>
+            </div>
+
+            {/* ---- pick a file ---- */}
+            {importState==="idle"&&(
+              <div
+                onDragOver={e=>{e.preventDefault();}}
+                onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files&&e.dataTransfer.files[0];if(f)loadStatement(f);}}
+                style={{border:`2px dashed ${C.purple}66`,borderRadius:"12px",background:C.purpleD,padding:"36px 20px",textAlign:"center"}}>
+                <div style={{fontSize:"30px",marginBottom:"8px"}}>📄</div>
+                <div style={{fontWeight:"700",fontSize:"14px",marginBottom:"4px"}}>Drop your statement CSV here</div>
+                <div style={{fontSize:"12px",color:C.muted,marginBottom:"16px",lineHeight:1.6}}>
+                  Nothing is saved until you review it. Anything you've already imported<br/>or excluded before is remembered, so the same file can be dropped in again safely.
+                </div>
+                <button style={{...S.btn,flex:"none",background:C.purple,padding:"9px 20px",fontSize:"13px"}} onClick={()=>stmtRef.current&&stmtRef.current.click()}>Choose file</button>
+              </div>
+            )}
+
+            {/* ---- review ---- */}
+            {importState==="review"&&importErr&&(
+              <div style={{padding:"14px",background:C.redD,border:`1px solid ${C.red}44`,borderRadius:"8px",marginBottom:"12px"}}>
+                <div style={{color:C.red,fontWeight:"700",fontSize:"13px",marginBottom:"6px"}}>⚠️ {importErr}</div>
+                <button style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px"}} onClick={()=>{setImportErr("");setImportState("idle");}}>Try another file</button>
+              </div>
+            )}
+            {importState==="review"&&!importErr&&importRows.length>0&&(<>
+              <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center",marginBottom:"10px",fontSize:"11px",color:C.muted}}>
+                <span><strong style={{color:C.text}}>{importRows.length}</strong> lines read</span>
+                <span>·</span>
+                <span><strong style={{color:C.teal}}>{chosen.length}</strong> selected to import</span>
+                {importSkipped>0&&<><span>·</span><span><strong style={{color:C.muted}}>{importSkipped}</strong> handled previously</span></>}
+                <div style={{marginLeft:"auto",display:"flex",gap:"6px",alignItems:"center"}}>
+                  {importSkipped>0&&(
+                    <button style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px"}} onClick={()=>setShowHandled(s=>!s)}>
+                      {showHandled?"Hide":"Show"} previously handled
+                    </button>
+                  )}
+                  <button style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px"}} onClick={()=>setAll(true)}>Select all</button>
+                  <button style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px"}} onClick={()=>setAll(false)}>None</button>
+                </div>
+              </div>
+              <div style={{overflowX:"auto",overflowY:"auto",maxHeight:"46vh",border:`1px solid ${C.border}`,borderRadius:"10px"}}>
+                <table style={{...S.tbl,minWidth:"760px"}}>
+                  <thead><tr>
+                    {["","Date","Merchant","Amount","Category","Status"].map((h,i)=><th key={i} style={{...S.th,position:"sticky",top:0,background:C.surface,zIndex:2}}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {visible.map(r=>{
+                      const [col,label]=STATUS[r.status]||[C.muted,r.status];
+                      const isCost=r.kind==="expense";
+                      return (
+                        <tr key={r.fp} style={{opacity:r.include?1:0.55,background:r.include?"transparent":C.bg}}>
+                          <td style={{...S.td,width:"34px"}}>
+                            <input type="checkbox" checked={r.include} onChange={e=>setImportRow(r.fp,{include:e.target.checked})}
+                              style={{width:"16px",height:"16px",accentColor:C.teal,cursor:"pointer"}}/>
+                          </td>
+                          <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(r.date)}</td>
+                          <td style={S.td}>
+                            <div style={{fontWeight:"600",fontSize:"13px"}}>{r.payee}</div>
+                            <div style={{fontSize:"10px",color:C.muted,fontFamily:"'Courier New',monospace"}}>{r.desc}</div>
+                          </td>
+                          <td style={{...S.td,fontWeight:"700",whiteSpace:"nowrap",color:isCost?C.text:C.blue}}>
+                            {(r.kind==="refund"||r.kind==="credit")?"-":""}{fmt(r.amount)}
+                          </td>
+                          <td style={S.td}>
+                            {isCost||r.kind==="refund"||r.kind==="credit"?(
+                              <select style={{...S.sel,padding:"5px 8px",fontSize:"11px",minWidth:"150px",borderColor:r.category?C.border:C.orange}}
+                                value={r.category} onChange={e=>setImportRow(r.fp,{category:e.target.value,status:r.status==="needcat"&&e.target.value?"new":r.status})}>
+                                <option value="">-- choose --</option>
+                                {BUSINESS_CATS.map(c=><option key={c} value={c}>{c}</option>)}
+                              </select>
+                            ):<span style={{color:C.muted,fontSize:"11px"}}>--</span>}
+                            {r.why&&r.category&&<div style={{fontSize:"9px",color:C.muted,marginTop:"2px"}}>{r.why}</div>}
+                          </td>
+                          <td style={S.td}>
+                            <span style={S.badge(col)}>{label}</span>
+                            {r.note&&<div style={{fontSize:"10px",color:C.muted,marginTop:"3px",maxWidth:"150px"}}>{r.note}</div>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {visible.length===0&&<tr><td colSpan={6} style={{...S.td,textAlign:"center",color:C.muted,padding:"28px"}}>
+                      Every line in this file has already been imported or excluded. Nothing new to add.
+                    </td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{...S.br,alignItems:"center"}}>
+                <button style={{...S.btn,background:chosen.length?C.teal:C.muted+"55"}} disabled={!chosen.length} onClick={runImport}>
+                  {chosen.length?`Import ${chosen.length} expense${chosen.length===1?"":"s"} · ${fmt(chosenTotal)}`:"Nothing selected"}
+                </button>
+                <button style={S.bgh} onClick={closeImport}>Cancel</button>
+              </div>
+            </>)}
+
+            {/* ---- saving ---- */}
+            {importState==="saving"&&(
+              <div style={{textAlign:"center",padding:"40px"}}>
+                <div style={{fontSize:"28px",marginBottom:"8px"}}>⏳</div>
+                <div style={{fontWeight:"700",fontSize:"14px",color:C.teal}}>Saving expenses...</div>
+              </div>
+            )}
+
+            {/* ---- done ---- */}
+            {importState==="done"&&importResult&&(
+              <div style={{textAlign:"center",padding:"28px 12px"}}>
+                <div style={{fontSize:"32px",marginBottom:"10px"}}>✅</div>
+                <div style={{fontWeight:"700",fontSize:"16px",marginBottom:"6px"}}>
+                  Added {importResult.added} expense{importResult.added===1?"":"s"} · {fmt(importResult.total)}
+                </div>
+                <div style={{fontSize:"12px",color:C.muted,lineHeight:1.6,maxWidth:"420px",margin:"0 auto"}}>
+                  {importResult.skipped>0&&<>{importResult.skipped} line{importResult.skipped===1?" was":"s were"} excluded and won't be offered again. </>}
+                  Drop this same file in whenever you like -- everything above is remembered, so only new charges will come up.
+                </div>
+                <div style={{...S.br,justifyContent:"center",marginTop:"22px"}}>
+                  <button style={{...S.btn,flex:"none",padding:"9px 22px"}} onClick={closeImport}>Done</button>
+                  <button style={{...S.bgh,flex:"none",padding:"9px 22px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportResult(null);setImportFile("");}}>Import another</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        );
+      })()}
 
       {/* -- ADD/EDIT ASSET -- */}
       {modal==="asset"&&(
