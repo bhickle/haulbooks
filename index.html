@@ -478,6 +478,7 @@ function App() {
 
   // -- Statement import state
   const [ledger, setLedger] = useState(new Set());   // fingerprints already dealt with
+  const [ledgerOk, setLedgerOk] = useState(true);    // false = history unreadable, no duplicate protection
   const [importState, setImportState] = useState("idle"); // idle | review | saving | done
   const [importRows, setImportRows] = useState([]);
   const [importErr, setImportErr] = useState("");
@@ -511,7 +512,9 @@ function App() {
           safe(sb.select("trips","order=date.desc")),
           safe(sb.select("vendors","order=name.asc")),
           safe(sb.select("leads","order=date.desc")),
-          safe(sb.select("imported_txns","select=fingerprint")),
+          // Not silenced like the rest: if the import history can't be read there
+          // is no duplicate protection, and the import screen has to say so.
+          sb.select("imported_txns","select=fingerprint").catch(e=>{console.error("Import history unreadable:",e);setLedgerOk(false);return [];}),
         ]);
         setExpenses(expRows.map(toExpense));
         setIncome(incRows.map(toIncome));
@@ -681,22 +684,40 @@ function App() {
               notes:"Imported from card statement",receiptImg:null,receiptB64:null,
               receiptMediaType:null,receiptIsPdf:false,receiptFileName:null};
     });
+    // Record every line we showed, so re-importing this statement is a no-op.
+    // Rows already in the ledger are left alone unless deliberately re-included.
+    const toRecord=importRows.filter(r=>!r.handled||r.include).map(r=>({
+      fingerprint:r.fp,card:r.card,date:r.date,postDate:r.postDate,desc:r.desc,
+      amount:r.signed,type:r.type,decision:r.include?"imported":"skipped",
+      skipReason:r.include?null:(r.note||"excluded by user"),expenseId:fpToId[r.fp]||null}));
+
     try{
       if(newExps.length) await sb.upsert("expenses",newExps.map(fromExpense));
-      // Record every line we showed, so re-importing this statement is a no-op.
-      // Rows already in the ledger are left alone unless deliberately re-included.
-      const toRecord=importRows.filter(r=>!r.handled||r.include).map(r=>({
-        fingerprint:r.fp,card:r.card,date:r.date,postDate:r.postDate,desc:r.desc,
-        amount:r.signed,type:r.type,decision:r.include?"imported":"skipped",
-        skipReason:r.include?null:(r.note||"excluded by user"),expenseId:fpToId[r.fp]||null}));
+    }catch(err){
+      console.error("Import save (expenses):",err);
+      setImportErr((err.message||"Could not save the expenses.")+" Nothing was saved.");
+      setImportState("review"); return;
+    }
+    try{
       if(toRecord.length) await sb.upsert("imported_txns",toRecord.map(fromLedger));
-      setExpenses(p=>[...newExps,...p]);
-      setLedger(p=>{const n=new Set(p); toRecord.forEach(r=>n.add(r.fingerprint)); return n;});
-      chosen.forEach(r=>{ if(r.payee) addVendor(r.payee); });
-      setImportResult({added:newExps.length,skipped:toRecord.length-newExps.length,
-                       total:newExps.reduce((s,e)=>s+e.amount,0)});
-      setImportState("done");
-    }catch(err){ console.error("Import save:",err); setImportErr(err.message||"Import failed."); setImportState("review"); }
+    }catch(err){
+      // The expenses are already in. Without their ledger rows a second attempt
+      // would duplicate them, so put the books back the way they were and say so.
+      console.error("Import save (ledger):",err);
+      let undone=true;
+      try{ await Promise.all(newExps.map(e=>sb.remove("expenses",e.id))); }
+      catch(e2){ console.error("Rollback failed:",e2); undone=false; }
+      setImportErr(undone
+        ? `${err.message||"Could not save the import history."} Nothing was saved - the ${newExps.length} expense${newExps.length===1?"":"s"} were rolled back, so it is safe to try again.`
+        : `${err.message||"Could not save the import history."} WARNING: ${newExps.length} expense${newExps.length===1?"":"s"} were saved but could not be recorded, and removing them also failed. Do NOT import this file again until they are checked.`);
+      setImportState("review"); return;
+    }
+    setExpenses(p=>[...newExps,...p]);
+    setLedger(p=>{const n=new Set(p); toRecord.forEach(r=>n.add(r.fingerprint)); return n;});
+    chosen.forEach(r=>{ if(r.payee) addVendor(r.payee); });
+    setImportResult({added:newExps.length,skipped:toRecord.length-newExps.length,
+                     total:newExps.reduce((s,e)=>s+e.amount,0)});
+    setImportState("done");
   };
   const closeImport=()=>{setModal(null);setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");};
 
@@ -1983,14 +2004,21 @@ function App() {
               </div>
             )}
 
+            {/* Without the history table there is no duplicate protection at all. */}
+            {!ledgerOk&&importState!=="done"&&(
+              <div style={{padding:"12px",background:C.yellowD,border:`1px solid ${C.yellow}44`,borderRadius:"8px",marginBottom:"12px",fontSize:"12px",color:C.yellow}}>
+                ⚠️ Can't read the import history, so previously imported or excluded charges won't be recognised. Check each row carefully before importing.
+              </div>
+            )}
+
             {/* ---- review ---- */}
             {importState==="review"&&importErr&&(
               <div style={{padding:"14px",background:C.redD,border:`1px solid ${C.red}44`,borderRadius:"8px",marginBottom:"12px"}}>
-                <div style={{color:C.red,fontWeight:"700",fontSize:"13px",marginBottom:"6px"}}>⚠️ {importErr}</div>
-                <button style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px"}} onClick={()=>{setImportErr("");setImportState("idle");}}>Try another file</button>
+                <div style={{color:C.red,fontWeight:"700",fontSize:"13px",marginBottom:importRows.length?"0":"6px"}}>⚠️ {importErr}</div>
+                {importRows.length===0&&<button style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px"}} onClick={()=>{setImportErr("");setImportState("idle");}}>Try another file</button>}
               </div>
             )}
-            {importState==="review"&&!importErr&&importRows.length>0&&(<>
+            {importState==="review"&&importRows.length>0&&(<>
               <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center",marginBottom:"10px",fontSize:"11px",color:C.muted}}>
                 <span><strong style={{color:C.text}}>{importRows.length}</strong> lines read</span>
                 <span>·</span>
