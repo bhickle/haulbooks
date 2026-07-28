@@ -158,6 +158,15 @@ function businessUse(trips){
     pct: total>0 ? business/total : 0,
   };
 }
+// Numbers get typed every which way -- "7245548687", "412-580-5884" -- so
+// normalise for display and keep the raw digits for the dial link.
+const phoneDigits = (p) => String(p==null?"":p).replace(/\D/g,"");
+const fmtPhone = (p) => {
+  const d=phoneDigits(p);
+  if(d.length===10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  if(d.length===11&&d[0]==="1") return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+  return String(p==null?"":p);
+};
 const fmt = (n) => "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d?new Date(d+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"--";
 const tod = () => new Date().toISOString().split("T")[0];
@@ -424,6 +433,20 @@ const VendorInput = ({value, onChange, placeholder="e.g. Sheetz, Lowe's", vendor
   );
 };
 
+// Tappable number. stopPropagation so dialling from inside a row doesn't also
+// open that row's modal.
+const PhoneLink = ({phone, size="11px", showIcon=true, muted=true}) => {
+  const d=phoneDigits(phone);
+  if(!phone) return null;
+  if(!d) return <span style={{fontSize:size,color:C.muted}}>{phone}</span>;
+  return (
+    <a href={"tel:"+d} onClick={e=>e.stopPropagation()}
+       style={{fontSize:size,color:muted?C.blue:C.text,textDecoration:"none",whiteSpace:"nowrap"}}>
+      {showIcon?"📞 ":""}{fmtPhone(phone)}
+    </a>
+  );
+};
+
 const StartTripModal = ({onStart, onCancel, lastTripEndOdo, S, C}) => {
   const [startOdo, setStartOdo] = useState(lastTripEndOdo||"");
   const [startPurpose, setStartPurpose] = useState("Business");
@@ -496,6 +519,10 @@ function App() {
   const [fHaulingJobs, setFHaulingJobs] = useState(makeFilter("all"));
   const [fHaulingExp, setFHaulingExp] = useState(makeFilter("all"));
   const [jobTagFilter, setJobTagFilter] = useState("");   // Jobs tab: filter by what was hauled
+  const [jobCustomer, setJobCustomer] = useState("");     // Jobs tab: filter to one customer
+  // On a phone the summary pushed the first job 600px down the screen, so it
+  // starts folded there and stays open on desktop where there's room.
+  const [jobStatsOpen, setJobStatsOpen] = useState(window.innerWidth > 768);
   const [expSearch, setExpSearch] = useState(""); // shared text search across expense tabs
   const [expFilterPayee, setExpFilterPayee] = useState(""); // shared payee filter
   const [expFilterCat, setExpFilterCat] = useState(""); // shared category filter
@@ -1225,7 +1252,7 @@ function App() {
                         <div style={{flex:1}}>
                           <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
                           {l.address&&<div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>📍 {l.address}</div>}
-                          {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                          {l.phone&&<div><PhoneLink phone={l.phone}/></div>}
                           <div style={{display:"flex",gap:"6px",marginTop:"6px",flexWrap:"wrap",alignItems:"center"}}>
                             <span style={S.badge(getLeadCol(l.status))}>{getLeadLabel(l.status)}</span>
                             {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
@@ -1293,7 +1320,7 @@ function App() {
                           <div style={{flex:1}}>
                             <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
                             {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
-                            {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                            {l.phone&&<div><PhoneLink phone={l.phone}/></div>}
                             <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
                               <span style={S.badge(C.red)}>Was {fmtDate(l.scheduledDate)}</span>
                               {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
@@ -1319,7 +1346,7 @@ function App() {
                           <div style={{flex:1}}>
                             <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
                             {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
-                            {l.phone&&<div style={{fontSize:"11px",color:C.muted}}>📞 {l.phone}</div>}
+                            {l.phone&&<div><PhoneLink phone={l.phone}/></div>}
                             <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
                               <span style={S.badge(C.blue)}>{fmtDate(l.scheduledDate)}</span>
                               {daysAway===0&&<span style={S.badge(C.orange)}>TODAY</span>}
@@ -1345,9 +1372,24 @@ function App() {
             {/* -- JOBS TAB -- */}
             {haulingTab==="jobs"&&(()=>{
               const dateOnly=haulingIncome.filter(i=>inDateRange(i.date,fHaulingJobs));
-              const filtered=dateOnly.filter(i=>!jobTagFilter||(i.tags||[]).indexOf(jobTagFilter)>=0)
+              const filtered=dateOnly.filter(i=>(!jobTagFilter||(i.tags||[]).indexOf(jobTagFilter)>=0)
+                                             && (!jobCustomer||i.customer===jobCustomer))
                                      .sort((a,b)=>b.date.localeCompare(a.date));
               const total=filtered.reduce((s,i)=>s+i.amount,0);
+              // Anyone who has hired him more than once, across all time rather than
+              // the current date filter -- a customer from last year is still a repeat.
+              const repeats=Object.values(haulingIncome.reduce((m,i)=>{
+                const k=i.customer||"(no name)";
+                if(!m[k]) m[k]={name:k,n:0,sum:0,last:"",phone:""};
+                m[k].n++; m[k].sum+=i.amount;
+                if(i.date>m[k].last){m[k].last=i.date; m[k].phone=i.phone||m[k].phone;}
+                return m;
+              },{})).filter(c=>c.n>1).sort((a,b)=>b.sum-a.sum);
+              const activeCustomer=jobCustomer?repeats.find(c=>c.name===jobCustomer)||
+                (()=>{const rows=haulingIncome.filter(i=>i.customer===jobCustomer);
+                      return {name:jobCustomer,n:rows.length,sum:rows.reduce((s,i)=>s+i.amount,0),
+                              last:rows.map(r=>r.date).sort().pop(),phone:(rows.find(r=>r.phone)||{}).phone||""};})()
+                :null;
               // Revenue by type, biggest first, so the cards follow the work rather
               // than a hardcoded pair that goes stale whenever the list changes.
               const byType=HAULING_TYPES.map(t=>{
@@ -1360,11 +1402,39 @@ function App() {
                 const rows=dateOnly.filter(i=>(i.tags||[]).indexOf(tg)>=0);
                 return {tg,n:rows.length,sum:rows.reduce((s,i)=>s+i.amount,0)};
               }).filter(x=>x.n>0).sort((a,b)=>b.sum-a.sum);
+              const anyFilter=jobTagFilter||jobCustomer;
+              // name -> how many jobs, for the "3× customer" marker on each row
+              const repeatNames=haulingIncome.reduce((m,i)=>{m[i.customer]=(m[i.customer]||0)+1;return m;},{});
               return <>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px",flexWrap:"wrap",gap:"8px"}}>
                   <DateFilter f={fHaulingJobs} setF={setFHaulingJobs}/>
                   <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} jobs · {fmt(total)}</span>
                 </div>
+
+                {/* Active filters stay visible right above the list, so a filtered
+                    view can never be mistaken for the whole business. */}
+                {anyFilter&&(
+                  <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center",marginBottom:"10px",padding:"8px 10px",background:C.blueD,border:`1px solid ${C.blue}44`,borderRadius:"8px"}}>
+                    <span style={{fontSize:"11px",color:C.muted}}>Showing</span>
+                    {jobCustomer&&<span style={S.badge(C.teal)}>{jobCustomer}</span>}
+                    {jobTagFilter&&<span style={S.badge(C.blue)}>{jobTagFilter}</span>}
+                    {activeCustomer&&activeCustomer.n>1&&(
+                      <span style={{fontSize:"11px",color:C.teal}}>{activeCustomer.n} jobs · {fmt(activeCustomer.sum)} lifetime</span>
+                    )}
+                    {activeCustomer&&activeCustomer.phone&&<PhoneLink phone={activeCustomer.phone}/>}
+                    <button style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,fontSize:"12px",cursor:"pointer"}}
+                      onClick={()=>{setJobTagFilter("");setJobCustomer("");}}>✕ clear</button>
+                  </div>
+                )}
+
+                <button onClick={()=>setJobStatsOpen(o=>!o)}
+                  style={{width:"100%",textAlign:"left",background:"transparent",border:`1px solid ${C.border}`,borderRadius:"8px",
+                          color:C.muted,padding:"8px 12px",fontSize:"11px",cursor:"pointer",marginBottom:"10px",
+                          letterSpacing:"1px",textTransform:"uppercase"}}>
+                  {jobStatsOpen?"▾":"▸"} Breakdown by type, what you hauled, repeat customers
+                </button>
+
+                {jobStatsOpen&&(<>
                 <div style={S.g4}>
                   <div style={S.card}><div style={S.sl}>Total Revenue</div><div style={{fontSize:"20px",fontWeight:"700",color:C.orange,marginTop:"4px"}}>{fmt(total)}</div><div style={{fontSize:"10px",color:C.muted,marginTop:"2px"}}>{filtered.length} jobs</div></div>
                   {byType.slice(0,3).map(x=>(
@@ -1375,6 +1445,21 @@ function App() {
                     </div>
                   ))}
                 </div>
+                {repeats.length>0&&(
+                  <div style={{marginTop:"14px"}}>
+                    <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"7px"}}>
+                      Repeat customers — {repeats.length} people, {fmt(repeats.reduce((s,c)=>s+c.sum,0))}
+                    </div>
+                    <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+                      {repeats.map(c=>(
+                        <button key={c.name} style={{...S.tb(jobCustomer===c.name,C.teal),flex:"none",padding:"6px 10px",fontSize:"11px"}}
+                          onClick={()=>setJobCustomer(jobCustomer===c.name?"":c.name)}>
+                          {c.name} <span style={{opacity:0.65}}>{c.n}× · {fmt(c.sum)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {tagStats.length>0&&(
                   <div style={{marginTop:"14px"}}>
                     <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"7px"}}>What you hauled — tap to filter</div>
@@ -1385,10 +1470,10 @@ function App() {
                           {x.tg} <span style={{opacity:0.65}}>{x.n} · {fmt(x.sum)}</span>
                         </button>
                       ))}
-                      {jobTagFilter&&<button style={{background:"none",border:"none",color:C.muted,fontSize:"12px",cursor:"pointer"}} onClick={()=>setJobTagFilter("")}>✕ clear</button>}
                     </div>
                   </div>
                 )}
+                </>)}
                 {isMobile?(
                   <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
                     {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No jobs in this period</div>}
@@ -1402,8 +1487,14 @@ function App() {
                           <span style={{fontSize:"11px",color:C.muted}}>{fmtDate(i.date)}</span>
                           <span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>
                           <span style={S.badge(C.blue)}>{i.paymentMethod}</span>
+                          {repeatNames[i.customer]>1&&<span style={S.badge(C.teal)}>{repeatNames[i.customer]}× customer</span>}
                         </div>
-                        {i.phone&&<div style={{fontSize:"11px",color:C.muted,marginTop:"4px"}}>📞 {i.phone}</div>}
+                        {(i.tags||[]).length>0&&(
+                          <div style={{display:"flex",gap:"3px",flexWrap:"wrap",marginTop:"5px"}}>
+                            {i.tags.map(tg=><span key={tg} style={{fontSize:"9px",color:C.blue,background:C.blueD,border:`1px solid ${C.blue}33`,borderRadius:"4px",padding:"1px 5px"}}>{tg}</span>)}
+                          </div>
+                        )}
+                        {i.phone&&<div style={{marginTop:"5px"}}><PhoneLink phone={i.phone}/></div>}
                       </div>
                     ))}
                   </div>
@@ -1413,8 +1504,11 @@ function App() {
                     {filtered.map(i=>(
                       <tr key={i.id} className="hrow" style={{cursor:"pointer"}} onClick={()=>{setViewingJob(i);setModal("viewJob");}}>
                         <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(i.date)}</td>
-                        <td style={{...S.td,fontWeight:"600"}}>{i.customer}</td>
-                        <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{i.phone||"--"}</td>
+                        <td style={{...S.td,fontWeight:"600"}} onClick={ev=>{ev.stopPropagation();setJobCustomer(jobCustomer===i.customer?"":i.customer);}}>
+                          <span style={{cursor:"pointer",textDecoration:repeatNames[i.customer]>1?"underline dotted":"none",textUnderlineOffset:"3px"}}>{i.customer}</span>
+                          {repeatNames[i.customer]>1&&<span style={{fontSize:"10px",color:C.teal,marginLeft:"6px"}}>{repeatNames[i.customer]}×</span>}
+                        </td>
+                        <td style={S.td}>{i.phone?<PhoneLink phone={i.phone} size="12px"/>:<span style={{color:C.muted,fontSize:"12px"}}>--</span>}</td>
                         <td style={S.td}>
                           <span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>
                           {(i.tags||[]).length>0&&(
@@ -2065,16 +2159,38 @@ function App() {
       })()}
 
       {/* -- VIEW JOB -- */}
-      {modal==="viewJob"&&viewingJob&&(()=>{const i=viewingJob;return(
+      {modal==="viewJob"&&viewingJob&&(()=>{const i=viewingJob;
+        const history=haulingIncome.filter(x=>x.customer===i.customer).sort((a,b)=>b.date.localeCompare(a.date));
+        const lifetime=history.reduce((s,x)=>s+x.amount,0);
+        const others=history.filter(x=>x.id!==i.id);
+        return(
         <div style={S.modal} onClick={ev=>ev.target===ev.currentTarget&&setModal(null)}>
           <div style={{...S.mbox,maxWidth:"420px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"4px"}}>
-              <div style={S.mt}>{i.customer}</div>
+              <div>
+                <div style={S.mt}>{i.customer}</div>
+                {i.phone&&<div style={{marginTop:"2px"}}><PhoneLink phone={i.phone} size="13px"/></div>}
+              </div>
               <button onClick={()=>setModal(null)} style={S.xBtn}>×</button>
             </div>
-            <div style={{marginBottom:"18px",display:"flex",gap:"5px",flexWrap:"wrap"}}><span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>{(i.tags||[]).map(tg=><span key={tg} style={S.badge(C.blue)}>{tg}</span>)}</div>
+            <div style={{marginBottom:"12px",display:"flex",gap:"5px",flexWrap:"wrap"}}><span style={S.badge(JOB_TYPE_COLORS[i.jobType]||C.orange)}>{i.jobType}</span>{(i.tags||[]).map(tg=><span key={tg} style={S.badge(C.blue)}>{tg}</span>)}</div>
+            {/* Repeat business is the cheapest revenue there is, so say so up front. */}
+            {others.length>0&&(
+              <div style={{background:C.tealD,border:`1px solid ${C.teal}44`,borderRadius:"8px",padding:"10px 12px",marginBottom:"14px"}}>
+                <div style={{fontSize:"12px",fontWeight:"700",color:C.teal,marginBottom:"6px"}}>
+                  Repeat customer — {history.length} jobs, {fmt(lifetime)} lifetime
+                </div>
+                {others.slice(0,4).map(o=>(
+                  <div key={o.id} style={{display:"flex",justifyContent:"space-between",fontSize:"11px",color:C.muted,padding:"2px 0",cursor:"pointer"}}
+                    onClick={()=>{setViewingJob(o);}}>
+                    <span>{fmtDate(o.date)} · {o.jobType}</span><span style={{color:C.text}}>{fmt(o.amount)}</span>
+                  </div>
+                ))}
+                {others.length>4&&<div style={{fontSize:"10px",color:C.muted,marginTop:"3px"}}>+{others.length-4} more</div>}
+              </div>
+            )}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"14px"}}>
-              {[["Date",fmtDate(i.date)],["Amount",fmt(i.amount)],["Payment",i.paymentMethod],["Phone",i.phone||"--"]].map(([label,val])=>(
+              {[["Date",fmtDate(i.date)],["Amount",fmt(i.amount)],["Payment",i.paymentMethod],["Jobs together",history.length+" · "+fmt(lifetime)]].map(([label,val])=>(
                 <div key={label} style={{background:C.bg,borderRadius:"8px",padding:"12px"}}>
                   <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>{label}</div>
                   <div style={{fontSize:"14px",fontWeight:"700",color:label==="Amount"?C.teal:C.text}}>{val}</div>
