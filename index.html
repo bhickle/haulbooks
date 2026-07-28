@@ -117,6 +117,40 @@ const TAX_MAP = {
 // List queries leave receipt_b64 out (it's megabytes), so presence has to be
 // judged from the metadata columns, which are always loaded.
 const hasReceipt = (e) => !!(e && (e.receiptB64 || e.receiptImg || e.receiptFileName || e.receiptMediaType));
+// Purposes that count as business use. "Personal" is the only one that doesn't,
+// and it has to be selectable or the business-use share can't be worked out.
+const TRIP_PURPOSES = ["Business","Job","Estimate","Dump Run","Supply Run","Equipment","Personal"];
+
+// Running the truck is only deductible for the share of miles that were for
+// work, so these categories get scaled by the business-use percentage.
+// Tolls and Parking are deliberately absent: a toll paid on a work trip is
+// deductible in full. "Mileage" is absent because it belongs to the standard
+// mileage method, which is an alternative to deducting these costs at all.
+const VEHICLE_CATS = ["Fuel","Truck Maintenance","Trailer Maintenance","Vehicle Wash & Road Services",
+                      "Truck Insurance","Trailer Insurance","Truck Loan Interest","Registration & Tags"];
+
+// Business-use share for a set of trips. Total miles come from the odometer,
+// not from adding the trips up: the gap between them is real driving that was
+// never logged, and counting only logged trips silently inflates the share.
+function businessUse(trips){
+  if(!trips.length) return null;
+  const num = (v)=>{const n=parseFloat(v); return isNaN(n)?null:n;};
+  const starts=trips.map(t=>num(t.startOdometer)).filter(v=>v!==null);
+  const ends=trips.map(t=>num(t.endOdometer)).filter(v=>v!==null);
+  const logged=trips.reduce((s,t)=>s+(t.miles||0),0);
+  const personal=trips.filter(t=>t.purpose==="Personal").reduce((s,t)=>s+(t.miles||0),0);
+  const business=logged-personal;
+  const span=(starts.length&&ends.length)?Math.max(...ends)-Math.min(...starts):0;
+  // Fall back to logged miles if the odometer readings are missing or look wrong.
+  const usableSpan = span>=logged ? span : logged;
+  const total = usableSpan||logged;
+  return {
+    total, logged, business, personal,
+    unlogged: Math.max(0, usableSpan-logged),
+    fromOdometer: span>=logged&&span>0,
+    pct: total>0 ? business/total : 0,
+  };
+}
 const fmt = (n) => "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d?new Date(d+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"--";
 const tod = () => new Date().toISOString().split("T")[0];
@@ -395,7 +429,7 @@ const StartTripModal = ({onStart, onCancel, lastTripEndOdo, S, C}) => {
         {lastTripEndOdo&&<div style={{fontSize:"11px",color:C.teal,marginTop:"4px"}}>↑ Pre-filled from your last trip ending ({lastTripEndOdo})</div>}
         <label style={S.lbl}>Purpose</label>
         <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
-          {["Business","Dump Run","Client Visit","Supply Run","Equipment"].map(p=>(
+          {TRIP_PURPOSES.map(p=>(
             <button key={p} style={{...S.tb(startPurpose===p,C.teal),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setStartPurpose(p)}>{p}</button>
           ))}
         </div>
@@ -557,7 +591,6 @@ function App() {
   const totalHaulingExp = useMemo(()=>haulingExpenses.filter(e=>e.category!=="Loan Payment (Principal)").reduce((s,e)=>s+e.amount,0),[haulingExpenses]);
   const haulingNetProfit = useMemo(()=>totalHaulingInc-totalHaulingExp,[totalHaulingInc,totalHaulingExp]);
 
-  const taxSummary = useMemo(()=>{const map={};haulingExpenses.filter(e=>e.category!=="Loan Payment (Principal)").forEach(e=>{const k=TAX_MAP[e.category]||"Miscellaneous";map[k]=(map[k]||0)+e.amount;});return Object.entries(map).sort((a,b)=>b[1]-a[1]);},[haulingExpenses]);
 
   // -- Handlers --------------------------------------------------------------
   const toBase64=(file)=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=()=>rej(new Error("fail"));r.readAsDataURL(file);});
@@ -871,12 +904,17 @@ function App() {
   };
   const cancelActiveTrip=()=>{if(window.confirm("Discard this active trip?")){{localStorage.removeItem("hb_active_trip");setActiveTrip(null);}}};
 
+  const downloadCSV=(headers,rows,filename)=>{
+    const escape=(v)=>`"${String(v).replace(/"/g,'""')}"`;
+    const csv=[headers,...rows].map(r=>r.map(escape).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);
+  };
   const exportCSV=(type)=>{
     let rows,headers,filename;
     if(type==="hauling-jobs"){headers=["Date","Customer","Phone","Address","Job Type","Payment","Amount","Notes"];rows=haulingIncome.map(i=>[i.date,i.customer,i.phone||"",i.address||"",i.jobType,i.paymentMethod,i.amount,i.notes||""]);filename="hauling_jobs.csv";}
     else if(type==="hauling-exp"){headers=["Date","Description","Category","Payee","Amount","Tax Category"];rows=haulingExpenses.map(e=>[e.date,e.desc,e.category,e.payee||"",e.amount,TAX_MAP[e.category]||"Misc"]);filename="hauling_expenses.csv";}
     else if(type==="mileage"){headers=["Date","Description","Purpose","Start Odo","End Odo","Miles"];rows=trips.map(t=>[t.date,t.desc,t.purpose,t.startOdometer||"",t.endOdometer||"",t.miles]);filename="mileage.csv";}
-    else if(type==="tax"){headers=["Tax Category","Amount"];rows=taxSummary.map(([cat,amt])=>[cat,amt.toFixed(2)]);filename="schedule_c.csv";}
     const escape=(v)=>`"${String(v).replace(/"/g,'""')}"`;
     const csv=[headers,...rows].map(r=>r.map(escape).join(",")).join("\n");
     const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
@@ -1610,8 +1648,20 @@ function App() {
               const rExp=haulingExpenses.filter(e=>inRange(e.date));
               const rDed=rExp.filter(e=>e.category!=="Loan Payment (Principal)");
               const totalInc=rInc.reduce((s,i)=>s+i.amount,0);
-              const totalDed=rDed.reduce((s,e)=>s+e.amount,0);
+
+              // Truck costs are only deductible for the business share of the miles.
+              const rTrips=trips.filter(t=>inRange(t.date));
+              const use=businessUse(rTrips);
+              const usePct=use?use.pct:1;                       // no trips logged -> don't scale
+              const isVehicle=(c)=>VEHICLE_CATS.indexOf(c)>=0;
+              const deductible=(e)=>isVehicle(e.category)?e.amount*usePct:e.amount;
+              const vehicleGross=rDed.filter(e=>isVehicle(e.category)).reduce((s,e)=>s+e.amount,0);
+              const vehicleNet=vehicleGross*usePct;
+              const totalDed=rDed.reduce((s,e)=>s+deductible(e),0);
               const netProfit=totalInc-totalDed;
+              // Using the standard mileage rate and deducting running costs are
+              // alternatives, so flag it if both appear in the same period.
+              const mileageCatUsed=rDed.some(e=>e.category==="Mileage");
 
               // Monthly P&L
               const monthMap={};
@@ -1622,7 +1672,8 @@ function App() {
               // Schedule C tax map
               const taxMap={};
               rDed.forEach(e=>{const k=TAX_MAP[e.category]||"Miscellaneous";if(!taxMap[k])taxMap[k]=[];taxMap[k].push(e);});
-              const taxRows=Object.entries(taxMap).sort((a,b)=>b[1].reduce((s,e)=>s+e.amount,0)-a[1].reduce((s,e)=>s+e.amount,0));
+              const taxSum=(rows)=>rows.reduce((s,e)=>s+deductible(e),0);
+              const taxRows=Object.entries(taxMap).sort((a,b)=>taxSum(b[1])-taxSum(a[1]));
 
               return (<>
                 <FilterBar/>
@@ -1665,18 +1716,38 @@ function App() {
 
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"24px",marginBottom:"8px",borderBottom:`1px solid ${C.border}`,paddingBottom:"6px"}}>
                   <span style={{fontSize:"10px",color:C.muted,letterSpacing:"3px",textTransform:"uppercase"}}>Schedule C -- click any category to see transactions</span>
-                  <button onClick={()=>exportCSV("tax")} style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px",color:C.teal,borderColor:C.teal+"44"}}>Schedule C CSV</button>
+                  <button onClick={()=>downloadCSV(
+                      ["Tax Category","Deductible","Gross","Business Use %","Transactions"],
+                      taxRows.map(([cat,rows])=>{
+                        const gross=rows.reduce((s,e)=>s+e.amount,0), ded=taxSum(rows);
+                        return [cat,ded.toFixed(2),gross.toFixed(2),(gross?ded/gross*100:100).toFixed(1),rows.length];
+                      }).concat([["TOTAL DEDUCTIBLE",totalDed.toFixed(2),"","",""]]),
+                      "schedule_c.csv")}
+                    style={{...S.bgh,flex:"none",padding:"4px 10px",fontSize:"10px",color:C.teal,borderColor:C.teal+"44"}}>Schedule C CSV</button>
                 </div>
                 <div style={S.card}>
-                  <div style={{padding:"10px 12px",background:C.bg,borderRadius:"7px",marginBottom:"14px",fontSize:"11px",color:C.muted}}>📋 Deductible expenses only. Loan principal excluded.</div>
+                  <div style={{padding:"10px 12px",background:C.bg,borderRadius:"7px",marginBottom:"14px",fontSize:"11px",color:C.muted}}>
+                    📋 Deductible expenses only. Loan principal excluded.
+                    {use&&<> Truck costs are shown at <strong style={{color:C.orange}}>{(usePct*100).toFixed(1)}%</strong> business use, not their full amount.</>}
+                  </div>
+                  {mileageCatUsed&&(
+                    <div style={{padding:"10px 12px",background:C.yellowD,border:`1px solid ${C.yellow}44`,borderRadius:"7px",marginBottom:"14px",fontSize:"11px",color:C.yellow}}>
+                      ⚠️ Some expenses use the "Mileage" category. Claiming the standard mileage rate and the truck's running costs are alternatives -- using both for the same vehicle would double-count.
+                    </div>
+                  )}
                   <table style={S.tbl}><thead><tr>{["Tax Category","Amount",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
                     {taxRows.length===0&&<tr><td colSpan={3} style={{...S.td,textAlign:"center",color:C.muted,padding:"24px"}}>No deductible expenses</td></tr>}
                     {taxRows.map(([cat,rows])=>{
-                      const amt=rows.reduce((s,e)=>s+e.amount,0);
+                      const amt=taxSum(rows);
+                      const gross=rows.reduce((s,e)=>s+e.amount,0);
+                      const scaled=Math.abs(gross-amt)>0.005;
                       return(
                         <tr key={cat} className="hrow" style={{cursor:"pointer"}} onClick={()=>setDrillData({title:`Schedule C -- ${cat}`,rows})}>
                           <td style={S.td}>{cat}</td>
-                          <td style={{...S.td,fontWeight:"700",color:C.orange}}>{fmt(amt)}</td>
+                          <td style={{...S.td,fontWeight:"700",color:C.orange}}>
+                            {fmt(amt)}
+                            {scaled&&<span style={{fontSize:"10px",color:C.muted,fontWeight:"400"}}> of {fmt(gross)}</span>}
+                          </td>
                           <td style={{...S.td,color:C.muted,fontSize:"11px"}}>↗ {rows.length} transactions</td>
                         </tr>
                       );
@@ -1685,14 +1756,55 @@ function App() {
                   </tbody></table>
                 </div>
 
-                {/* Mileage summary */}
-                {trips.filter(t=>inRange(t.date)).length>0&&(<>
-                  <div style={S.sh}>Mileage</div>
-                  <div style={S.g3}>
-                    {(()=>{const rt=trips.filter(t=>inRange(t.date));const biz=rt.filter(t=>t.purpose!=="Personal").reduce((s,t)=>s+t.miles,0);const tot=rt.reduce((s,t)=>s+t.miles,0);return[[`Total Miles`,tot.toFixed(1)+" mi",C.blue],["Business Miles",biz.toFixed(1)+" mi",C.teal],["Business Use",tot>0?(biz/tot*100).toFixed(1)+"%":"--",C.orange]].map(([l,v,col])=><div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>);})()}
+                {/* Vehicle use -- where the percentage above comes from */}
+                {use&&(<>
+                  <div style={S.sh}>Vehicle Use</div>
+                  <div style={S.g4}>
+                    {[["Total Miles",use.total.toFixed(0)+" mi",C.blue,use.fromOdometer?"from the odometer":"from logged trips"],
+                      ["Business Miles",use.business.toFixed(0)+" mi",C.teal,rTrips.length+" trips logged"],
+                      ["Personal Miles",use.personal.toFixed(0)+" mi",C.muted,use.personal>0?"excluded":"none logged"],
+                      ["Business Use",(use.pct*100).toFixed(1)+"%",C.orange,"applied to truck costs"]
+                    ].map(([l,v,col,sub])=>(
+                      <div key={l} style={S.card}>
+                        <div style={S.sl}>{l}</div>
+                        <div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div>
+                        <div style={{fontSize:"10px",color:C.muted,marginTop:"2px"}}>{sub}</div>
+                      </div>
+                    ))}
                   </div>
-                  <button onClick={()=>exportCSV("mileage")} style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px",marginTop:"8px"}}>Mileage CSV</button>
+
+                  <div style={{...S.card,marginTop:"12px"}}>
+                    <table style={S.tbl}><tbody>
+                      <tr><td style={{...S.td,color:C.muted,fontSize:"12px"}}>Truck running costs in this period</td>
+                          <td style={{...S.td,textAlign:"right",fontWeight:"700"}}>{fmt(vehicleGross)}</td></tr>
+                      <tr><td style={{...S.td,color:C.muted,fontSize:"12px"}}>Business share at {(use.pct*100).toFixed(1)}%</td>
+                          <td style={{...S.td,textAlign:"right",fontWeight:"700",color:C.teal}}>{fmt(vehicleNet)}</td></tr>
+                      <tr style={{borderTop:`1px solid ${C.border}`}}>
+                          <td style={{...S.td,color:C.muted,fontSize:"12px"}}>Not deductible (personal use)</td>
+                          <td style={{...S.td,textAlign:"right",fontWeight:"700",color:C.red}}>{fmt(vehicleGross-vehicleNet)}</td></tr>
+                    </tbody></table>
+                    <div style={{fontSize:"11px",color:C.muted,marginTop:"10px",lineHeight:1.6}}>
+                      Covers {VEHICLE_CATS.join(", ")}. Tolls and parking are deductible in full and aren't scaled.
+                    </div>
+                  </div>
+
+                  {use.unlogged>0&&(
+                    <div style={{padding:"10px 12px",background:C.yellowD,border:`1px solid ${C.yellow}44`,borderRadius:"8px",marginTop:"10px",fontSize:"11px",color:C.yellow,lineHeight:1.6}}>
+                      ⚠️ The odometer moved {use.total.toFixed(0)} miles but only {use.logged.toFixed(0)} are logged, leaving <strong>{use.unlogged.toFixed(0)} miles unaccounted</strong>. They're treated as non-business, which is what drops the share to {(use.pct*100).toFixed(1)}%. Logging them as trips would raise it.
+                    </div>
+                  )}
+                  {!use.fromOdometer&&(
+                    <div style={{padding:"10px 12px",background:C.yellowD,border:`1px solid ${C.yellow}44`,borderRadius:"8px",marginTop:"10px",fontSize:"11px",color:C.yellow,lineHeight:1.6}}>
+                      ⚠️ Odometer readings are missing or inconsistent for this period, so total miles fall back to the sum of logged trips. That can overstate business use, because unlogged driving isn't counted.
+                    </div>
+                  )}
+                  <button onClick={()=>exportCSV("mileage")} style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px",marginTop:"10px"}}>Mileage CSV</button>
                 </>)}
+                {!use&&(
+                  <div style={{padding:"12px",background:C.yellowD,border:`1px solid ${C.yellow}44`,borderRadius:"8px",marginTop:"16px",fontSize:"11px",color:C.yellow,lineHeight:1.6}}>
+                    ⚠️ No trips logged in this period, so truck costs are shown at their full amount. Deducting them normally requires mileage records supporting the business-use share.
+                  </div>
+                )}
               </>);
             })()}
 
@@ -2252,7 +2364,7 @@ function App() {
             </div>
             <label style={S.lbl}>Purpose</label>
             <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
-              {["Business","Dump Run","Client Visit","Supply Run","Equipment"].map(p=>(
+              {TRIP_PURPOSES.map(p=>(
                 <button key={p} style={{...S.tb(tripForm.purpose===p,C.blue),flex:"none",padding:"6px 10px",fontSize:"11px"}} onClick={()=>setTripForm(f=>({...f,purpose:p}))}>{p}</button>
               ))}
             </div>
