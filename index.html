@@ -584,10 +584,10 @@ const StartTripModal = ({onStart, onCancel, lastTripEndOdo, S, C}) => {
 };
 
 function App() {
-  // -- Top-level view: dashboard | hauling | reports | settings
-  const [view, setView] = useState("dashboard");
+  // -- Top-level view: home | jobs | expenses | reports | settings
+  const [view, setView] = useState("home");
   // -- Sub-tabs per module
-  const [haulingTab, setHaulingTab] = useState("jobs");       // jobs | leads | scheduled | expenses | mileage | assets
+  const [jobStage, setJobStage] = useState("done");           // leads | scheduled | done
 
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
@@ -1197,8 +1197,9 @@ function App() {
         </div>
         <nav style={S.nav}>
           {[
-            ["dashboard","📊 Dashboard",C.blue],
-            ["hauling","🚛 Hauling",C.orange],
+            ["home","📊 Home",C.blue],
+            ["jobs","🚛 Jobs",C.orange],
+            ["expenses","🧾 Expenses",C.purple],
             ["reports","📈 Reports",C.yellow],
           ].map(([v,l,col])=>(
             <button key={v} style={S.nb(view===v,col)} onClick={()=>{setView(v);}}>{l}</button>
@@ -1215,7 +1216,7 @@ function App() {
         {/* ==================================================================
             DASHBOARD
         ================================================================== */}
-        {view==="dashboard"&&(()=>{
+        {view==="home"&&(()=>{
           const now = new Date();
           const thisMonth = now.toISOString().slice(0,7);
           const lastMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
@@ -1256,7 +1257,7 @@ function App() {
             {/* -- KPI cards -- 2x2 grid, this month + YTD -- */}
             <div style={S.g2}>
               {/* Hauling this month */}
-              <div style={{...S.card,borderTop:`3px solid ${C.orange}`}} onClick={()=>{setView("hauling");setHaulingTab("jobs");}}>
+              <div style={{...S.card,borderTop:`3px solid ${C.orange}`}} onClick={()=>{setView("jobs");setJobStage("done");}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                   <div style={S.sl}>🚛 Hauling -- This Month</div>
                   <Trend curr={haulingThisMonth} prev={haulingLastMonth}/>
@@ -1287,14 +1288,14 @@ function App() {
               return <>
                 <div style={{...S.sh,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <span>📅 Upcoming Jobs</span>
-                  <button style={{background:"none",border:"none",color:C.blue,fontSize:"11px",cursor:"pointer"}} onClick={()=>{setView("hauling");setHaulingTab("scheduled");}}>View all →</button>
+                  <button style={{background:"none",border:"none",color:C.blue,fontSize:"11px",cursor:"pointer"}} onClick={()=>{setView("jobs");setJobStage("scheduled");}}>View all →</button>
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
                   {upcomingJobs.map(l=>{
                     const d=new Date(l.scheduledDate),n=new Date(today2);
                     const daysAway=Math.ceil((d-n)/(1000*60*60*24));
                     return (
-                      <div key={l.id} style={{...S.card,padding:"12px",cursor:"pointer",borderLeft:`3px solid ${daysAway===0?C.orange:daysAway<=2?C.yellow:C.blue}`}} onClick={()=>{setView("hauling");setHaulingTab("scheduled");}}>
+                      <div key={l.id} style={{...S.card,padding:"12px",cursor:"pointer",borderLeft:`3px solid ${daysAway===0?C.orange:daysAway<=2?C.yellow:C.blue}`}} onClick={()=>{setView("jobs");setJobStage("scheduled");}}>
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                           <div>
                             <span style={{fontWeight:"700",fontSize:"13px"}}>{l.customer}</span>
@@ -1335,32 +1336,27 @@ function App() {
         })()}
 
         {/* ==================================================================
-            HAULING MODULE
+            JOBS -- one pipeline: leads, work booked in, work completed
         ================================================================== */}
-        {view==="hauling"&&(
+        {view==="jobs"&&(
           <>
-            {/* Sub-nav */}
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0"}}>
-              <div style={S.subNav}>
-                {[["jobs","Jobs"],["leads","Leads"],["scheduled","Scheduled"],["expenses","Expenses"],["mileage","Mileage"],["assets","Assets"]].map(([t,l])=>(
-                  <button key={t} style={S.sn(haulingTab===t)} onClick={()=>{setHaulingTab(t);setExpSearch("");setExpFilterPayee("");setExpFilterCat("");}}>{l}</button>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}>
+              <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
+                {[["leads","Leads",leads.filter(l=>!["lost","complete"].includes(l.status)).length],
+                   ["scheduled","Scheduled",leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status)).length],
+                   ["done","Completed",haulingIncome.length]].map(([k,label,n])=>(
+                  <button key={k} style={{...S.tb(jobStage===k,C.orange),flex:"none",padding:"7px 13px",fontSize:"12px"}}
+                    onClick={()=>setJobStage(k)}>{label} <span style={{opacity:0.6}}>{n}</span></button>
                 ))}
               </div>
-              {!isMobile&&<div style={{display:"flex",gap:"6px",marginBottom:"1px"}}>
-                {haulingTab==="jobs"&&<button style={{...S.btn,flex:"none",background:C.orange,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setJobForm(blankJob);setEditingId(null);setModal("job");}}>+ Log Job</button>}
-                {haulingTab==="leads"&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
-                {haulingTab==="scheduled"&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
-                {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",background:C.purple,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>}
-                {haulingTab==="expenses"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>}
-                {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setModal("startTrip");}}>▶ Start Trip</button>}
-                {haulingTab==="mileage"&&!activeTrip&&<button style={{...S.btn,flex:"none",background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Manual</button>}
-                {haulingTab==="mileage"&&activeTrip&&<button style={{...S.btn,flex:"none",background:C.red,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}}>■ End Trip</button>}
-                {haulingTab==="assets"&&<button style={{...S.btn,flex:"none",background:C.yellow,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setAssetForm(blankAsset);setEditingId(null);setModal("asset");}}>+ Add Asset</button>}
-              </div>}
+              <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                {jobStage==="done"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.orange}} onClick={()=>{setJobForm(blankJob);setEditingId(null);setModal("job");}}>+ Log Job</button>}
+                {jobStage==="leads"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.teal}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
+                {jobStage==="scheduled"&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.blue}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
+              </div>
             </div>
-
             {/* -- LEADS TAB -- */}
-            {haulingTab==="leads"&&(()=>{
+            {jobStage==="leads"&&(()=>{
               const LEAD_STATUSES=[["new","New",C.blue],["estimate_sent","Estimate Sent",C.yellow],["won","Won",C.teal],["lost","Lost",C.red],["complete","Complete",C.muted]];
               const getLeadCol=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[2]||C.muted;
               const getLeadLabel=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[1]||s;
@@ -1371,7 +1367,6 @@ function App() {
               const convRate=leads.filter(l=>l.status!=="new"&&l.status!=="estimate_sent").length>0?Math.round((wonLeads.length/leads.filter(l=>["won","lost"].includes(l.status)).length)*100):null;
               return <>
                 <div style={{marginBottom:"16px",display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
-                  {isMobile&&<button style={{...S.btn,background:C.teal,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>+ Add Lead</button>}
                 </div>
                 <div style={S.g3}>
                   {[[`${openLeads.length} Open`,openLeads.length+" leads",C.blue],[`Pipeline Value`,fmt(totalEstimated),C.teal],[`Win Rate`,convRate!==null?convRate+"%":"--",C.orange]].map(([l,v,col])=>(
@@ -1431,14 +1426,13 @@ function App() {
             })()}
 
             {/* -- SCHEDULED TAB -- */}
-            {haulingTab==="scheduled"&&(()=>{
+            {jobStage==="scheduled"&&(()=>{
               const scheduled=leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status)).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate));
               const today2=tod();
               const upcoming=scheduled.filter(l=>l.scheduledDate>=today2);
               const past=scheduled.filter(l=>l.scheduledDate<today2);
               return <>
                 <div style={{marginBottom:"16px"}}>
-                  {isMobile&&<button style={{...S.btn,background:C.blue,padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setLeadForm({...blankLead,date:tod(),status:"scheduled"});setEditingId(null);setModal("lead");}}>+ Schedule Job</button>}
                 </div>
                 <div style={S.g3}>
                   {[[`${upcoming.length} Upcoming`,"jobs",C.blue],[`${past.length} Overdue`,past.length>0?"needs action":"all good",past.length>0?C.red:C.teal],[`This Week`,upcoming.filter(l=>{const d=new Date(l.scheduledDate),n=new Date(today2);return (d-n)/(1000*60*60*24)<=7;}).length+" jobs",C.orange]].map(([l,v,col])=>(
@@ -1504,7 +1498,7 @@ function App() {
             })()}
 
             {/* -- JOBS TAB -- */}
-            {haulingTab==="jobs"&&(()=>{
+            {jobStage==="done"&&(()=>{
               const dateOnly=haulingIncome.filter(i=>inDateRange(i.date,fHaulingJobs));
               const filtered=dateOnly.filter(i=>(!jobTagFilter||(i.tags||[]).indexOf(jobTagFilter)>=0)
                                              && (!jobCustomer||i.customer===jobCustomer))
@@ -1662,8 +1656,20 @@ function App() {
               </>;
             })()}
 
+          </>
+        )}
+
+        {/* ==================================================================
+            EXPENSES
+        ================================================================== */}
+        {view==="expenses"&&(
+          <>
+            <div style={{display:"flex",gap:"6px",justifyContent:"flex-end",marginBottom:"12px",flexWrap:"wrap"}}>
+              <button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.purple}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>
+              <button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>{setExpForm({...blankExp,type:"business"});setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setScanTarget("expense");setEditingId(null);setExpModalContext("hauling");setModal("expense");}}>+ Add Expense</button>
+            </div>
             {/* -- EXPENSES TAB -- */}
-            {haulingTab==="expenses"&&(()=>{
+            {(()=>{
               const dateFiltered=haulingExpenses.filter(e=>inDateRange(e.date,fHaulingExp));
               const filtered=dateFiltered.filter(e=>{
                 if(expSearch&&!e.desc.toLowerCase().includes(expSearch.toLowerCase())&&!(e.payee||"").toLowerCase().includes(expSearch.toLowerCase())&&!(e.notes||"").toLowerCase().includes(expSearch.toLowerCase())) return false;
@@ -1675,7 +1681,6 @@ function App() {
               const deductible=filtered.filter(e=>e.category!=="Loan Payment (Principal)").reduce((s,e)=>s+e.amount,0);
               return <>
                 <div style={{display:"flex",flexDirection:"column",gap:"8px",marginBottom:"16px"}}>
-                  {isMobile&&<button style={{...S.btn,background:C.purple,padding:"8px 14px",fontSize:"12px"}} onClick={()=>{setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");setModal("import");}}>⬆ Import Statement</button>}
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
                     <DateFilter f={fHaulingExp} setF={setFHaulingExp}/>
                     <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} of {dateFiltered.length} · {fmt(total)}</span>
@@ -1728,118 +1733,6 @@ function App() {
               </>;
             })()}
 
-            {/* -- MILEAGE TAB -- */}
-            {haulingTab==="mileage"&&(()=>{
-              const filtered=trips.filter(t=>inDateRange(t.date,fMile)).sort((a,b)=>b.date.localeCompare(a.date));
-              const totalMiles=filtered.reduce((s,t)=>s+t.miles,0);
-              const bizMiles=filtered.filter(t=>t.purpose!=="Personal").reduce((s,t)=>s+t.miles,0);
-              const ActiveTripBanner=(()=>{
-                if(!activeTrip)return null;
-                const elapsed=Math.floor((Date.now()-activeTrip.startedAt)/60000);
-                const hrs=Math.floor(elapsed/60),mins=elapsed%60;
-                const elapsedStr=hrs>0?`${hrs}h ${mins}m`:`${mins}m`;
-                return (
-                  <div style={{...S.card,border:`2px solid ${C.teal}`,background:C.tealD,marginBottom:"16px",position:"relative",overflow:"hidden"}}>
-                    <div style={{position:"absolute",top:0,left:0,right:0,height:"2px",background:`linear-gradient(90deg,${C.teal},transparent)`,animation:"pulse 2s infinite"}}/>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
-                      <div>
-                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
-                          <span style={{width:"8px",height:"8px",borderRadius:"50%",background:C.teal,display:"inline-block",boxShadow:`0 0 6px ${C.teal}`}}/>
-                          <span style={{fontWeight:"700",color:C.teal,fontSize:"14px"}}>Trip in Progress</span>
-                          <span style={S.badge(C.teal)}>{activeTrip.purpose}</span>
-                        </div>
-                        <div style={{fontSize:"12px",color:C.muted,marginTop:"4px"}}>
-                          Started {fmtDate(activeTrip.date)} · <span style={{color:C.text}}>{elapsedStr} elapsed</span>
-                          {activeTrip.startOdometer&&<> · Start: <span style={{color:C.text}}>{activeTrip.startOdometer}</span></>}
-                        </div>
-                      </div>
-                      <div style={{display:"flex",gap:"8px"}}>
-                        <button onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}} style={{...S.btn,background:C.red,padding:"6px 14px",fontSize:"12px"}}>■ End Trip</button>
-                        <button onClick={cancelActiveTrip} style={{...S.bgh,padding:"6px 10px",fontSize:"11px",color:C.muted}}>Discard</button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })();
-              return <>
-                {ActiveTripBanner}
-                {!activeTrip&&isMobile&&<button style={{...S.btn,background:C.teal,padding:"8px 16px",fontSize:"12px",width:"100%",marginBottom:"12px"}} onClick={()=>setModal("startTrip")}>▶ Start Trip</button>}
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
-                  <DateFilter f={fMile} setF={setFMile}/>
-                  <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} trips</span>
-                </div>
-                <div style={S.g3}>
-                  {[["Total Miles",totalMiles.toFixed(1)+" mi",C.blue],["Business Miles",bizMiles.toFixed(1)+" mi",C.teal],["Business Use",totalMiles>0?(bizMiles/totalMiles*100).toFixed(1)+"%":"--",C.orange]].map(([l,v,col])=>(
-                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"20px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
-                  ))}
-                </div>
-                {isMobile?(
-                  <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
-                    {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No trips logged</div>}
-                    {filtered.map(t=>(
-                      <div key={t.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${t.purpose==="Personal"?C.muted:C.teal}`}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                          <div style={{fontWeight:"600",fontSize:"13px",flex:1}}>{t.desc||"Trip"}</div>
-                          <div style={{fontWeight:"700",color:C.blue,whiteSpace:"nowrap"}}>{t.miles} mi</div>
-                        </div>
-                        <div style={{display:"flex",gap:"6px",marginTop:"5px",flexWrap:"wrap",alignItems:"center"}}>
-                          <span style={{fontSize:"11px",color:C.muted}}>{fmtDate(t.date)}</span>
-                          <span style={S.badge(t.purpose==="Personal"?C.muted:C.teal)}>{t.purpose}</span>
-                          {t.startOdometer&&<span style={{fontSize:"11px",color:C.muted}}>{t.startOdometer}→{t.endOdometer}</span>}
-                        </div>
-                        <div style={{display:"flex",gap:"8px",marginTop:"8px"}}>
-                          <button onClick={()=>startEditTrip(t)} style={{...S.bgh,flex:"none",fontSize:"11px",padding:"4px 10px",color:C.blue,borderColor:C.blue+"44"}}>Edit</button>
-                          <button onClick={()=>deleteTrip(t.id)} style={{...S.bgh,flex:"none",fontSize:"11px",padding:"4px 10px",color:C.red,borderColor:C.red+"44"}}>Delete</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ):(
-                  <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Description","Purpose","Start Odo","End Odo","Miles",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
-                    {filtered.length===0&&<tr><td colSpan={7} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No trips logged</td></tr>}
-                    {filtered.map(t=>(
-                      <tr key={t.id}>
-                        <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(t.date)}</td>
-                        <td style={{...S.td,fontWeight:"600"}}>{t.desc}</td>
-                        <td style={S.td}><span style={S.badge(t.purpose==="Personal"?C.muted:C.teal)}>{t.purpose}</span></td>
-                        <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{t.startOdometer||"--"}</td>
-                        <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{t.endOdometer||"--"}</td>
-                        <td style={{...S.td,fontWeight:"700"}}>{t.miles} mi</td>
-                        <td style={S.td}><button onClick={()=>startEditTrip(t)} style={{...S.xBtn,color:C.blue,fontSize:"12px",fontWeight:"700"}}>Edit</button><button onClick={()=>deleteTrip(t.id)} style={S.xBtn}>×</button></td>
-                      </tr>
-                    ))}
-                  </tbody></table></div>
-                )}
-              </>;
-            })()}
-
-            {/* -- ASSETS TAB -- */}
-            {haulingTab==="assets"&&(
-              <>
-                <div style={{...S.card,background:C.yellowD,border:`1px solid ${C.yellow}44`,marginBottom:"16px",fontSize:"12px",color:C.yellow}}>
-                  🔧 Equipment and vehicles tracked here for depreciation / Section 179 -- give to your accountant at tax time
-                </div>
-                <div style={S.g3}>
-                  {[["Total Asset Value",fmt(assets.reduce((s,a)=>s+a.cost,0)),C.orange],["Items Tracked",assets.length+" assets",C.blue],["Section 179","Consult accountant",C.yellow]].map(([l,v,col])=>(
-                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"16px",fontWeight:"700",color:col,marginTop:"6px"}}>{v}</div></div>
-                  ))}
-                </div>
-                <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Asset","Vendor","Cost","Notes",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
-                  {assets.length===0&&<tr><td colSpan={6} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No assets recorded</td></tr>}
-                  {assets.map(a=>(
-                    <tr key={a.id}>
-                      <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(a.date)}</td>
-                      <td style={{...S.td,fontWeight:"700"}}>{a.name}</td>
-                      <td style={{...S.td,color:C.muted}}>{a.vendor}</td>
-                      <td style={{...S.td,fontWeight:"700",color:C.orange}}>{fmt(a.cost)}</td>
-                      <td style={{...S.td,fontSize:"11px",color:C.yellow}}>{a.notes}</td>
-                      <td style={S.td}><button onClick={()=>startEditAsset(a)} style={{...S.xBtn,color:C.blue,fontSize:"12px",fontWeight:"700"}}>Edit</button><button onClick={()=>deleteAsset(a.id)} style={S.xBtn}>×</button></td>
-                    </tr>
-                  ))}
-                  {assets.length>0&&<tr style={{borderTop:`2px solid ${C.border}`}}><td colSpan={3} style={{...S.td,fontWeight:"700",color:C.muted,fontSize:"11px"}}>TOTAL</td><td style={{...S.td,fontWeight:"700",color:C.orange,fontSize:"16px"}}>{fmt(assets.reduce((s,a)=>s+a.cost,0))}</td><td colSpan={2} style={S.td}/></tr>}
-                </tbody></table></div>
-              </>
-            )}
           </>
         )}
 
@@ -2085,6 +1978,108 @@ function App() {
         })()}
 
         {/* ==================================================================
+            TRIP LOG -- lives under Reports because it is what produces the
+            business-use percentage shown above it.
+        ================================================================== */}
+        {view==="reports"&&(
+          <>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"8px",flexWrap:"wrap",marginTop:"28px",marginBottom:"12px",borderTop:`1px solid ${C.border}`,paddingTop:"22px"}}>
+              <div style={{fontSize:"11px",fontWeight:"600",color:C.muted,letterSpacing:"2px",textTransform:"uppercase"}}>Trip Log</div>
+              <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                {!activeTrip&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.teal}} onClick={()=>setModal("startTrip")}>▶ Start Trip</button>}
+                {!activeTrip&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.blue}} onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>+ Log Manual</button>}
+                {activeTrip&&<button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.red}} onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}}>■ End Trip</button>}
+              </div>
+            </div>
+            {/* -- MILEAGE TAB -- */}
+            {(()=>{
+              const filtered=trips.filter(t=>inDateRange(t.date,fMile)).sort((a,b)=>b.date.localeCompare(a.date));
+              const totalMiles=filtered.reduce((s,t)=>s+t.miles,0);
+              const bizMiles=filtered.filter(t=>t.purpose!=="Personal").reduce((s,t)=>s+t.miles,0);
+              const ActiveTripBanner=(()=>{
+                if(!activeTrip)return null;
+                const elapsed=Math.floor((Date.now()-activeTrip.startedAt)/60000);
+                const hrs=Math.floor(elapsed/60),mins=elapsed%60;
+                const elapsedStr=hrs>0?`${hrs}h ${mins}m`:`${mins}m`;
+                return (
+                  <div style={{...S.card,border:`2px solid ${C.teal}`,background:C.tealD,marginBottom:"16px",position:"relative",overflow:"hidden"}}>
+                    <div style={{position:"absolute",top:0,left:0,right:0,height:"2px",background:`linear-gradient(90deg,${C.teal},transparent)`,animation:"pulse 2s infinite"}}/>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"8px"}}>
+                      <div>
+                        <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                          <span style={{width:"8px",height:"8px",borderRadius:"50%",background:C.teal,display:"inline-block",boxShadow:`0 0 6px ${C.teal}`}}/>
+                          <span style={{fontWeight:"700",color:C.teal,fontSize:"14px"}}>Trip in Progress</span>
+                          <span style={S.badge(C.teal)}>{activeTrip.purpose}</span>
+                        </div>
+                        <div style={{fontSize:"12px",color:C.muted,marginTop:"4px"}}>
+                          Started {fmtDate(activeTrip.date)} · <span style={{color:C.text}}>{elapsedStr} elapsed</span>
+                          {activeTrip.startOdometer&&<> · Start: <span style={{color:C.text}}>{activeTrip.startOdometer}</span></>}
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:"8px"}}>
+                        <button onClick={()=>{setEndTripForm({endOdometer:"",desc:"",notes:""});setModal("endTrip");}} style={{...S.btn,background:C.red,padding:"6px 14px",fontSize:"12px"}}>■ End Trip</button>
+                        <button onClick={cancelActiveTrip} style={{...S.bgh,padding:"6px 10px",fontSize:"11px",color:C.muted}}>Discard</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })();
+              return <>
+                {ActiveTripBanner}
+                {!activeTrip&&isMobile&&<button style={{...S.btn,background:C.teal,padding:"8px 16px",fontSize:"12px",width:"100%",marginBottom:"12px"}} onClick={()=>setModal("startTrip")}>▶ Start Trip</button>}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px",flexWrap:"wrap",gap:"8px"}}>
+                  <DateFilter f={fMile} setF={setFMile}/>
+                  <span style={{fontSize:"11px",color:C.muted}}>{filtered.length} trips</span>
+                </div>
+                <div style={S.g3}>
+                  {[["Total Miles",totalMiles.toFixed(1)+" mi",C.blue],["Business Miles",bizMiles.toFixed(1)+" mi",C.teal],["Business Use",totalMiles>0?(bizMiles/totalMiles*100).toFixed(1)+"%":"--",C.orange]].map(([l,v,col])=>(
+                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"20px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
+                  ))}
+                </div>
+                {isMobile?(
+                  <div style={{marginTop:"12px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                    {filtered.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No trips logged</div>}
+                    {filtered.map(t=>(
+                      <div key={t.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${t.purpose==="Personal"?C.muted:C.teal}`}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                          <div style={{fontWeight:"600",fontSize:"13px",flex:1}}>{t.desc||"Trip"}</div>
+                          <div style={{fontWeight:"700",color:C.blue,whiteSpace:"nowrap"}}>{t.miles} mi</div>
+                        </div>
+                        <div style={{display:"flex",gap:"6px",marginTop:"5px",flexWrap:"wrap",alignItems:"center"}}>
+                          <span style={{fontSize:"11px",color:C.muted}}>{fmtDate(t.date)}</span>
+                          <span style={S.badge(t.purpose==="Personal"?C.muted:C.teal)}>{t.purpose}</span>
+                          {t.startOdometer&&<span style={{fontSize:"11px",color:C.muted}}>{t.startOdometer}→{t.endOdometer}</span>}
+                        </div>
+                        <div style={{display:"flex",gap:"8px",marginTop:"8px"}}>
+                          <button onClick={()=>startEditTrip(t)} style={{...S.bgh,flex:"none",fontSize:"11px",padding:"4px 10px",color:C.blue,borderColor:C.blue+"44"}}>Edit</button>
+                          <button onClick={()=>deleteTrip(t.id)} style={{...S.bgh,flex:"none",fontSize:"11px",padding:"4px 10px",color:C.red,borderColor:C.red+"44"}}>Delete</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ):(
+                  <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Description","Purpose","Start Odo","End Odo","Miles",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
+                    {filtered.length===0&&<tr><td colSpan={7} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No trips logged</td></tr>}
+                    {filtered.map(t=>(
+                      <tr key={t.id}>
+                        <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(t.date)}</td>
+                        <td style={{...S.td,fontWeight:"600"}}>{t.desc}</td>
+                        <td style={S.td}><span style={S.badge(t.purpose==="Personal"?C.muted:C.teal)}>{t.purpose}</span></td>
+                        <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{t.startOdometer||"--"}</td>
+                        <td style={{...S.td,color:C.muted,fontSize:"12px"}}>{t.endOdometer||"--"}</td>
+                        <td style={{...S.td,fontWeight:"700"}}>{t.miles} mi</td>
+                        <td style={S.td}><button onClick={()=>startEditTrip(t)} style={{...S.xBtn,color:C.blue,fontSize:"12px",fontWeight:"700"}}>Edit</button><button onClick={()=>deleteTrip(t.id)} style={S.xBtn}>×</button></td>
+                      </tr>
+                    ))}
+                  </tbody></table></div>
+                )}
+              </>;
+            })()}
+
+          </>
+        )}
+
+        {/* ==================================================================
             SETTINGS
         ================================================================== */}
         {view==="settings"&&(
@@ -2147,6 +2142,38 @@ function App() {
               )}
             </div>
 
+
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"28px",marginBottom:"10px"}}>
+              <div style={S.sh}>Assets &amp; Equipment</div>
+              <button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"11px",background:C.yellow}} onClick={()=>{setAssetForm(blankAsset);setEditingId(null);setModal("asset");}}>+ Add Asset</button>
+            </div>
+            {/* -- ASSETS TAB -- */}
+            {(
+              <>
+                <div style={{...S.card,background:C.yellowD,border:`1px solid ${C.yellow}44`,marginBottom:"16px",fontSize:"12px",color:C.yellow}}>
+                  🔧 Equipment and vehicles tracked here for depreciation / Section 179 -- give to your accountant at tax time
+                </div>
+                <div style={S.g3}>
+                  {[["Total Asset Value",fmt(assets.reduce((s,a)=>s+a.cost,0)),C.orange],["Items Tracked",assets.length+" assets",C.blue],["Section 179","Consult accountant",C.yellow]].map(([l,v,col])=>(
+                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"16px",fontWeight:"700",color:col,marginTop:"6px"}}>{v}</div></div>
+                  ))}
+                </div>
+                <div style={{...S.card,marginTop:"16px"}}><table style={S.tbl}><thead><tr>{["Date","Asset","Vendor","Cost","Notes",""].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead><tbody>
+                  {assets.length===0&&<tr><td colSpan={6} style={{...S.td,textAlign:"center",color:C.muted,padding:"36px"}}>No assets recorded</td></tr>}
+                  {assets.map(a=>(
+                    <tr key={a.id}>
+                      <td style={{...S.td,color:C.muted,fontSize:"11px",whiteSpace:"nowrap"}}>{fmtDate(a.date)}</td>
+                      <td style={{...S.td,fontWeight:"700"}}>{a.name}</td>
+                      <td style={{...S.td,color:C.muted}}>{a.vendor}</td>
+                      <td style={{...S.td,fontWeight:"700",color:C.orange}}>{fmt(a.cost)}</td>
+                      <td style={{...S.td,fontSize:"11px",color:C.yellow}}>{a.notes}</td>
+                      <td style={S.td}><button onClick={()=>startEditAsset(a)} style={{...S.xBtn,color:C.blue,fontSize:"12px",fontWeight:"700"}}>Edit</button><button onClick={()=>deleteAsset(a.id)} style={S.xBtn}>×</button></td>
+                    </tr>
+                  ))}
+                  {assets.length>0&&<tr style={{borderTop:`2px solid ${C.border}`}}><td colSpan={3} style={{...S.td,fontWeight:"700",color:C.muted,fontSize:"11px"}}>TOTAL</td><td style={{...S.td,fontWeight:"700",color:C.orange,fontSize:"16px"}}>{fmt(assets.reduce((s,a)=>s+a.cost,0))}</td><td colSpan={2} style={S.td}/></tr>}
+                </tbody></table></div>
+              </>
+            )}
             {/* -- ALL EXPENSES TABLE -- */}
             <div style={S.sh}>All Expenses</div>
             {(()=>{
@@ -2238,8 +2265,9 @@ function App() {
       {isMobile&&(
         <nav style={{position:"fixed",bottom:0,left:0,right:0,background:C.surface,borderTop:`1px solid ${C.border}`,display:"flex",zIndex:100,paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
           {[
-            ["dashboard","📊","Dash",C.blue],
-            ["hauling","🚛","Hauling",C.orange],
+            ["home","📊","Home",C.blue],
+            ["jobs","🚛","Jobs",C.orange],
+            ["expenses","🧾","Expenses",C.purple],
             ["reports","📈","Reports",C.yellow],
           ].map(([v,icon,label,col])=>(
             <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"10px 4px 8px",border:"none",background:"transparent",color:view===v?col:C.muted,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:"2px",fontSize:"18px",transition:"color 0.1s"}}>
@@ -2273,6 +2301,10 @@ function App() {
               <button style={{...S.btn,background:C.blue,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
                 onClick={()=>{setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);setEditingId(null);setModal("expense");}}>
                 <span style={{fontSize:"22px"}}>🧾</span><div><div>Expense</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Fuel, dump fees, supplies, etc.</div></div>
+              </button>
+              <button style={{...S.btn,background:C.yellow,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
+                onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>
+                <span style={{fontSize:"22px"}}>📋</span><div><div>Lead</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Someone called for a quote</div></div>
               </button>
               <button style={{...S.btn,background:C.purple,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
                 onClick={()=>{setTripForm(blankTrip);setEditingId(null);setModal("trip");}}>
