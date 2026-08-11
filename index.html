@@ -176,6 +176,13 @@ const fmtPhone = (p) => {
   if(d.length===11&&d[0]==="1") return `(${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
   return String(p==null?"":p);
 };
+const fmtTime = (t) => {
+  if(!t) return "";
+  const m=String(t).match(/^(\d{1,2}):(\d{2})/);
+  if(!m) return String(t);
+  const h=+m[1], ap=h>=12?"PM":"AM", hh=(h%12)||12;
+  return `${hh}:${m[2]} ${ap}`;
+};
 const fmt = (n) => "$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d?new Date(d+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"--";
 const tod = () => new Date().toISOString().split("T")[0];
@@ -399,8 +406,8 @@ const toAsset = r => ({id:r.id,date:r.date,name:r.name,vendor:r.vendor||"",cost:
 const fromAsset = a => ({id:a.id,date:a.date,name:a.name,vendor:a.vendor||null,cost:a.cost,notes:a.notes||null});
 const toTrip = r => ({id:r.id,date:r.date,desc:r.description,startOdometer:r.start_odometer||"",endOdometer:r.end_odometer||"",miles:parseFloat(r.miles||0),purpose:r.purpose||"Business",notes:r.notes||""});
 const fromTrip = t => ({id:t.id,date:t.date,description:t.desc,start_odometer:t.startOdometer||null,end_odometer:t.endOdometer||null,miles:t.miles,purpose:t.purpose||"Business",notes:t.notes||null});
-const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||""});
-const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null});
+const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||"",scheduledTime:r.scheduled_time||""});
+const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null,scheduled_time:l.scheduledTime||""});
 const toBiz = r => ({name:r.name||"",tagline:r.tagline||"",phone:r.phone||"",email:r.email||"",address:r.address||"",footerNote:r.footer_note||""});
 const fromBiz = b => ({id:1,name:b.name||"",tagline:b.tagline||"",phone:b.phone||"",email:b.email||"",address:b.address||"",footer_note:b.footerNote||""});
 const fromLedger = r => ({fingerprint:r.fingerprint,card:r.card||null,txn_date:r.date,post_date:r.postDate||null,description:r.desc,amount:r.amount,txn_type:r.type||null,decision:r.decision,skip_reason:r.skipReason||null,expense_id:r.expenseId||null});
@@ -599,8 +606,8 @@ function App() {
   const [trips, setTrips] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [leads, setLeads] = useState([]);
-  const [leadForm, setLeadForm] = useState({date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:""});
-  const blankLead = {date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:""};
+  const [leadForm, setLeadForm] = useState({date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:"",scheduledTime:""});
+  const blankLead = {date:"",customer:"",phone:"",address:"",jobType:"",estimatedAmount:"",status:"new",notes:"",scheduledDate:"",scheduledTime:""};
   const addVendor=(name)=>{const n=name.trim();if(n&&!vendors.includes(n)){setVendors(p=>[n,...p].sort((a,b)=>a.localeCompare(b)));sb.upsert("vendors",{name:n}).catch(e=>console.error(e));}return n;};
 
   // -- UI state
@@ -617,6 +624,9 @@ function App() {
     }
   };
   const [viewingJob, setViewingJob] = useState(null);
+  const [viewingLead, setViewingLead] = useState(null);
+  const [schedView, setSchedView] = useState("list");   // list | calendar
+  const [calMonth, setCalMonth] = useState("");         // YYYY-MM, empty = current
   const [editingId, setEditingId] = useState(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   useEffect(() => {
@@ -990,7 +1000,7 @@ function App() {
     setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal(null);
   };
   const deleteLead=async(id)=>{try{await sb.remove("leads",id);}catch(e){console.error(e);}setLeads(p=>p.filter(l=>l.id!==id));};
-  const startEditLead=(l)=>{setEditingId(l.id);setLeadForm({date:l.date,customer:l.customer,phone:l.phone||"",address:l.address||"",jobType:l.jobType||"",estimatedAmount:l.estimatedAmount?String(l.estimatedAmount):"",status:l.status||"new",notes:l.notes||"",scheduledDate:l.scheduledDate||""});setModal("lead");};
+  const startEditLead=(l)=>{setEditingId(l.id);setLeadForm({date:l.date,customer:l.customer,phone:l.phone||"",address:l.address||"",jobType:l.jobType||"",estimatedAmount:l.estimatedAmount?String(l.estimatedAmount):"",status:l.status||"new",notes:l.notes||"",scheduledDate:l.scheduledDate||"",scheduledTime:l.scheduledTime||""});setModal("lead");};
   const convertLeadToJob=async(lead)=>{
     if(!window.confirm(`Convert "${lead.customer}" to a completed job?`))return;
     const jobRec={id:"job_"+Date.now(),date:lead.scheduledDate||lead.date,customer:lead.customer,phone:lead.phone||"",address:lead.address||"",jobType:lead.jobType||"Junk Removal",amount:lead.estimatedAmount||0,paymentMethod:"Cash",notes:(lead.notes||"")+" [Converted from lead]",tags:[],propertyId:null,flipId:null};
@@ -1342,7 +1352,7 @@ function App() {
           <>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"8px",flexWrap:"wrap",marginBottom:"14px"}}>
               <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
-                {[["leads","Leads",leads.filter(l=>!["lost","complete"].includes(l.status)).length],
+                {[["leads","Leads",leads.filter(l=>!l.scheduledDate&&!["lost","complete"].includes(l.status)).length],
                    ["scheduled","Scheduled",leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status)).length],
                    ["done","Completed",haulingIncome.length]].map(([k,label,n])=>(
                   <button key={k} style={{...S.tb(jobStage===k,C.orange),flex:"none",padding:"7px 13px",fontSize:"12px"}}
@@ -1360,7 +1370,9 @@ function App() {
               const LEAD_STATUSES=[["new","New",C.blue],["estimate_sent","Estimate Sent",C.yellow],["won","Won",C.teal],["lost","Lost",C.red],["complete","Complete",C.muted]];
               const getLeadCol=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[2]||C.muted;
               const getLeadLabel=(s)=>LEAD_STATUSES.find(x=>x[0]===s)?.[1]||s;
-              const openLeads=leads.filter(l=>!["lost","complete"].includes(l.status));
+              // Once a lead has a date it belongs to Scheduled, not here -- otherwise
+              // the same job shows up under two stages at once.
+              const openLeads=leads.filter(l=>!["lost","complete"].includes(l.status)&&!l.scheduledDate);
               const closedLeads=leads.filter(l=>["lost","complete"].includes(l.status));
               const totalEstimated=openLeads.reduce((s,l)=>s+(l.estimatedAmount||0),0);
               const wonLeads=leads.filter(l=>l.status==="won");
@@ -1425,77 +1437,123 @@ function App() {
               </>;
             })()}
 
-            {/* -- SCHEDULED TAB -- */}
+            {/* -- SCHEDULED -- work booked in, as a list or a calendar -- */}
             {jobStage==="scheduled"&&(()=>{
-              const scheduled=leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status)).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate));
+              const scheduled=leads.filter(l=>l.scheduledDate&&!["lost","complete"].includes(l.status))
+                .sort((x,y)=>(x.scheduledDate+"T"+(x.scheduledTime||"99:99")).localeCompare(y.scheduledDate+"T"+(y.scheduledTime||"99:99")));
               const today2=tod();
               const upcoming=scheduled.filter(l=>l.scheduledDate>=today2);
               const past=scheduled.filter(l=>l.scheduledDate<today2);
+              const monthKey=calMonth||today2.slice(0,7);
+              const cy=+monthKey.slice(0,4), cm=+monthKey.slice(5,7);
+              const startDow=new Date(cy,cm-1,1).getDay();
+              const daysInMonth=new Date(cy,cm,0).getDate();
+              const byDay={};
+              scheduled.forEach(l=>{ if(l.scheduledDate.slice(0,7)===monthKey){ const d=+l.scheduledDate.slice(8,10); (byDay[d]=byDay[d]||[]).push(l); } });
+              const monthJobs=scheduled.filter(l=>l.scheduledDate.slice(0,7)===monthKey);
+              const shift=(n)=>{ const d=new Date(cy,cm-1+n,1); setCalMonth(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")); };
+              const monthLabel2=new Date(cy,cm-1,1).toLocaleString("en-US",{month:"long",year:"numeric"});
+
+              // One card shared by both views. Tapping it opens the detail; the
+              // buttons stop propagation so they don't also open it.
+              const Card=(l)=>{
+                const overdue=l.scheduledDate<today2;
+                const daysAway=Math.round((new Date(l.scheduledDate+"T12:00:00")-new Date(today2+"T12:00:00"))/86400000);
+                return (
+                  <div key={l.id} style={{...S.card,padding:"14px",cursor:"pointer",borderLeft:"3px solid "+(overdue?C.red:C.blue)}}
+                    onClick={()=>{setViewingLead(l);setModal("viewLead");}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
+                        {l.address&&<div style={{fontSize:"11px",color:C.muted}}>{l.address}</div>}
+                        {l.phone&&<div style={{marginTop:"2px"}}><PhoneLink phone={l.phone}/></div>}
+                        <div style={{display:"flex",gap:"6px",marginTop:"5px",alignItems:"center",flexWrap:"wrap"}}>
+                          <span style={S.badge(overdue?C.red:C.blue)}>{overdue?"Was ":""}{fmtDate(l.scheduledDate)}</span>
+                          {l.scheduledTime&&<span style={S.badge(C.teal)}>{fmtTime(l.scheduledTime)}</span>}
+                          {!overdue&&daysAway===0&&<span style={S.badge(C.orange)}>TODAY</span>}
+                          {!overdue&&daysAway===1&&<span style={S.badge(C.yellow)}>TOMORROW</span>}
+                          {!overdue&&daysAway>1&&daysAway<=7&&<span style={S.badge(C.yellow)}>in {daysAway}d</span>}
+                          {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
+                        </div>
+                        {l.notes&&<div style={{fontSize:"11px",color:C.muted,marginTop:"5px"}}>{l.notes}</div>}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}} onClick={ev=>ev.stopPropagation()}>
+                        {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal}}>{fmt(l.estimatedAmount)}</div>}
+                        <button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 10px",fontSize:"11px"}}>Mark Complete</button>
+                        <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>{overdue?"Reschedule":"Edit"}</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              };
+
               return <>
-                <div style={{marginBottom:"16px"}}>
-                </div>
-                <div style={S.g3}>
-                  {[[`${upcoming.length} Upcoming`,"jobs",C.blue],[`${past.length} Overdue`,past.length>0?"needs action":"all good",past.length>0?C.red:C.teal],[`This Week`,upcoming.filter(l=>{const d=new Date(l.scheduledDate),n=new Date(today2);return (d-n)/(1000*60*60*24)<=7;}).length+" jobs",C.orange]].map(([l,v,col])=>(
-                    <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
+                <div style={{display:"flex",gap:"5px",marginBottom:"12px"}}>
+                  {[["list","List"],["calendar","Calendar"]].map(([k,lab])=>(
+                    <button key={k} style={{...S.tb(schedView===k,C.blue),flex:"none",padding:"6px 14px",fontSize:"11px"}} onClick={()=>setSchedView(k)}>{lab}</button>
                   ))}
                 </div>
-                <div style={{marginTop:"16px",display:"flex",flexDirection:"column",gap:"8px"}}>
-                  {past.length>0&&<>
-                    <div style={{fontSize:"11px",fontWeight:"700",color:C.red,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:"4px"}}>⚠ Past Due</div>
-                    {past.map(l=>(
-                      <div key={l.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${C.red}`}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
-                          <div style={{flex:1}}>
-                            <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
-                            {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
-                            {l.phone&&<div><PhoneLink phone={l.phone}/></div>}
-                            <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
-                              <span style={S.badge(C.red)}>Was {fmtDate(l.scheduledDate)}</span>
-                              {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
-                            </div>
-                          </div>
-                          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}}>
-                            {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal}}>{fmt(l.estimatedAmount)}</div>}
-                            <button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 10px",fontSize:"11px"}}>→ Mark Complete</button>
-                            <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>Reschedule</button>
-                          </div>
-                        </div>
-                      </div>
+
+                {schedView==="list"?(<>
+                  <div style={S.g3}>
+                    {[[upcoming.length+" Upcoming","jobs",C.blue],
+                      [past.length+" Overdue",past.length>0?"needs action":"all good",past.length>0?C.red:C.teal],
+                      ["This Week",upcoming.filter(l=>Math.round((new Date(l.scheduledDate+"T12:00:00")-new Date(today2+"T12:00:00"))/86400000)<=7).length+" jobs",C.orange]
+                     ].map(([l,v,col])=>(
+                      <div key={l} style={S.card}><div style={S.sl}>{l}</div><div style={{fontSize:"18px",fontWeight:"700",color:col,marginTop:"4px"}}>{v}</div></div>
                     ))}
-                  </>}
-                  {upcoming.length===0&&past.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>No scheduled jobs</div>}
-                  {upcoming.length>0&&<div style={{fontSize:"11px",fontWeight:"700",color:C.blue,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:"4px"}}>Upcoming</div>}
-                  {upcoming.map(l=>{
-                    const d=new Date(l.scheduledDate),n=new Date(today2);
-                    const daysAway=Math.ceil((d-n)/(1000*60*60*24));
-                    return (
-                      <div key={l.id} style={{...S.card,padding:"14px",borderLeft:`3px solid ${C.blue}`}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"8px"}}>
-                          <div style={{flex:1}}>
-                            <div style={{fontWeight:"700",fontSize:"14px"}}>{l.customer}</div>
-                            {l.address&&<div style={{fontSize:"11px",color:C.muted}}>📍 {l.address}</div>}
-                            {l.phone&&<div><PhoneLink phone={l.phone}/></div>}
-                            <div style={{display:"flex",gap:"6px",marginTop:"4px",alignItems:"center"}}>
-                              <span style={S.badge(C.blue)}>{fmtDate(l.scheduledDate)}</span>
-                              {daysAway===0&&<span style={S.badge(C.orange)}>TODAY</span>}
-                              {daysAway===1&&<span style={S.badge(C.yellow)}>TOMORROW</span>}
-                              {daysAway>1&&daysAway<=7&&<span style={S.badge(C.yellow)}>in {daysAway}d</span>}
-                              {l.jobType&&<span style={S.badge(C.purple)}>{l.jobType}</span>}
-                            </div>
-                            {l.notes&&<div style={{fontSize:"11px",color:C.muted,marginTop:"4px",fontStyle:"italic"}}>{l.notes}</div>}
+                  </div>
+                  <div style={{marginTop:"16px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                    {past.length>0&&<div style={{fontSize:"11px",fontWeight:"700",color:C.red,textTransform:"uppercase",letterSpacing:"0.08em"}}>Past Due</div>}
+                    {past.map(Card)}
+                    {upcoming.length===0&&past.length===0&&<div style={{...S.card,textAlign:"center",color:C.muted,padding:"36px"}}>Nothing booked in. Give a lead a date to schedule it.</div>}
+                    {upcoming.length>0&&<div style={{fontSize:"11px",fontWeight:"700",color:C.blue,textTransform:"uppercase",letterSpacing:"0.08em",marginTop:"4px"}}>Upcoming</div>}
+                    {upcoming.map(Card)}
+                  </div>
+                </>):(<>
+                  <div style={{...S.card,padding:"12px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
+                      <button style={{...S.bgh,flex:"none",padding:"4px 14px",fontSize:"15px"}} onClick={()=>shift(-1)}>{"\u2039"}</button>
+                      <div style={{fontWeight:"700",fontSize:"14px"}}>{monthLabel2}</div>
+                      <button style={{...S.bgh,flex:"none",padding:"4px 14px",fontSize:"15px"}} onClick={()=>shift(1)}>{"\u203a"}</button>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"3px"}}>
+                      {["S","M","T","W","T","F","S"].map((d,i)=>(
+                        <div key={i} style={{textAlign:"center",fontSize:"10px",color:C.muted,fontWeight:"700",paddingBottom:"4px"}}>{d}</div>
+                      ))}
+                      {Array.from({length:startDow}).map((_,i)=><div key={"blank"+i}/>)}
+                      {Array.from({length:daysInMonth}).map((_,i)=>{
+                        const day=i+1;
+                        const iso=monthKey+"-"+String(day).padStart(2,"0");
+                        const jobs=byDay[day]||[];
+                        const isToday=iso===today2;
+                        const overdue=jobs.length>0&&iso<today2;
+                        return (
+                          <div key={day} style={{minHeight:"48px",borderRadius:"6px",padding:"3px",
+                              background:jobs.length?(overdue?C.redD:C.blueD):"transparent",
+                              border:"1px solid "+(isToday?C.orange:(jobs.length?(overdue?C.red+"44":C.blue+"44"):"transparent"))}}>
+                            <div style={{fontSize:"10px",color:isToday?C.orange:C.muted,fontWeight:isToday?"700":"400",textAlign:"right"}}>{day}</div>
+                            {jobs.slice(0,2).map(l=>(
+                              <div key={l.id} onClick={()=>{setViewingLead(l);setModal("viewLead");}}
+                                style={{fontSize:"9px",color:overdue?C.red:C.blue,fontWeight:"700",cursor:"pointer",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                {l.customer}
+                              </div>
+                            ))}
+                            {jobs.length>2&&<div style={{fontSize:"9px",color:C.muted}}>+{jobs.length-2}</div>}
                           </div>
-                          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:"6px"}}>
-                            {l.estimatedAmount&&<div style={{fontWeight:"700",color:C.teal}}>{fmt(l.estimatedAmount)}</div>}
-                            <button onClick={()=>convertLeadToJob(l)} style={{...S.btn,background:C.orange,padding:"4px 10px",fontSize:"11px"}}>→ Mark Complete</button>
-                            <button onClick={()=>startEditLead(l)} style={{...S.xBtn,color:C.blue,fontSize:"11px",fontWeight:"700"}}>Edit</button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div style={{marginTop:"14px",display:"flex",flexDirection:"column",gap:"8px"}}>
+                    {monthJobs.length===0
+                      ? <div style={{...S.card,textAlign:"center",color:C.muted,padding:"28px"}}>Nothing booked in {monthLabel2}</div>
+                      : monthJobs.map(Card)}
+                  </div>
+                </>)}
               </>;
             })()}
+
 
             {/* -- JOBS TAB -- */}
             {jobStage==="done"&&(()=>{
@@ -2419,6 +2477,70 @@ function App() {
         </div>
       );})()}
 
+      {/* -- VIEW SCHEDULED WORK -- */}
+      {modal==="viewLead"&&viewingLead&&(()=>{const l=viewingLead;
+        const overdue=l.scheduledDate&&l.scheduledDate<tod();
+        const prior=haulingIncome.filter(j=>j.customer===l.customer);
+        const lifetime=prior.reduce((s2,j)=>s2+j.amount,0);
+        return(
+        <div style={S.modal} onClick={ev=>ev.target===ev.currentTarget&&setModal(null)}>
+          <div style={{...S.mbox,maxWidth:"430px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"4px"}}>
+              <div>
+                <div style={S.mt}>{l.customer}</div>
+                {l.phone&&<div style={{marginTop:"2px"}}><PhoneLink phone={l.phone} size="13px"/></div>}
+              </div>
+              <button onClick={()=>setModal(null)} style={S.xBtn}>{"\u00d7"}</button>
+            </div>
+            <div style={{marginBottom:"14px",display:"flex",gap:"5px",flexWrap:"wrap"}}>
+              {l.jobType&&<span style={S.badge(JOB_TYPE_COLORS[l.jobType]||C.purple)}>{l.jobType}</span>}
+              <span style={S.badge(overdue?C.red:C.blue)}>{overdue?"Overdue":"Scheduled"}</span>
+            </div>
+
+            {prior.length>0&&(
+              <div style={{background:C.tealD,border:"1px solid "+C.teal+"44",borderRadius:"8px",padding:"9px 12px",marginBottom:"14px",fontSize:"12px",color:C.teal,fontWeight:"700"}}>
+                Worked for them before {"\u2014"} {prior.length} job{prior.length===1?"":"s"}, {fmt(lifetime)}
+              </div>
+            )}
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"14px"}}>
+              {[["Date",l.scheduledDate?fmtDate(l.scheduledDate):"Not set"],
+                ["Time",l.scheduledTime?fmtTime(l.scheduledTime):"Not set"],
+                ["Estimate",l.estimatedAmount?fmt(l.estimatedAmount):"--"],
+                ["Enquired",fmtDate(l.date)]].map(([label,val])=>(
+                <div key={label} style={{background:C.bg,borderRadius:"8px",padding:"12px"}}>
+                  <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>{label}</div>
+                  <div style={{fontSize:"14px",fontWeight:"700"}}>{val}</div>
+                </div>
+              ))}
+            </div>
+
+            {l.address&&(
+              <div style={{background:C.bg,borderRadius:"8px",padding:"12px",marginBottom:"10px"}}>
+                <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>Address</div>
+                <a href={"https://maps.google.com/?q="+encodeURIComponent(l.address)} target="_blank" rel="noreferrer"
+                   style={{fontSize:"13px",color:C.blue,textDecoration:"none"}}>{l.address}</a>
+              </div>
+            )}
+            {l.notes&&(
+              <div style={{background:C.bg,borderRadius:"8px",padding:"12px",marginBottom:"10px"}}>
+                <div style={{fontSize:"10px",color:C.muted,letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px"}}>Notes</div>
+                <div style={{fontSize:"13px",lineHeight:1.6}}>{l.notes}</div>
+              </div>
+            )}
+
+            <button style={{...S.btn,background:C.orange,width:"100%",marginTop:"8px",padding:"12px"}}
+              onClick={()=>{setModal(null);convertLeadToJob(l);}}>Mark Complete {"\u2192"} Log as Job</button>
+            <div style={{...S.br,marginTop:"10px"}}>
+              <button style={{...S.btn,background:C.blue}} onClick={()=>{setModal(null);startEditLead(l);}}>Edit</button>
+              <button style={{...S.btn,background:C.red}} onClick={()=>{if(window.confirm("Delete this scheduled job?")){deleteLead(l.id);setModal(null);}}}>Delete</button>
+              <button style={S.bgh} onClick={()=>setModal(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
       {/* -- LOG JOB (Hauling) -- */}
       {modal==="job"&&(
         <div style={S.modal} onClick={e=>e.target===e.currentTarget&&setModal(null)}>
@@ -2792,8 +2914,15 @@ function App() {
               ))}
             </div>
             {(leadForm.status==="won"||leadForm.status==="scheduled")&&<>
-              <label style={S.lbl}>Scheduled Date</label>
-              <input type="date" style={S.inp} value={leadForm.scheduledDate} onChange={e=>setLeadForm(f=>({...f,scheduledDate:e.target.value}))}/>
+              <div style={S.row}>
+                <div style={{flex:2}}><label style={S.lbl}>Scheduled Date</label>
+                  <input type="date" style={S.inp} value={leadForm.scheduledDate} onChange={e=>setLeadForm(f=>({...f,scheduledDate:e.target.value}))}/></div>
+                <div style={{flex:1}}><label style={S.lbl}>Time</label>
+                  <input type="time" style={S.inp} value={leadForm.scheduledTime} onChange={e=>setLeadForm(f=>({...f,scheduledTime:e.target.value}))}/></div>
+              </div>
+              {leadForm.scheduledDate&&Math.abs(new Date(leadForm.scheduledDate+"T12:00:00")-new Date())>1000*60*60*24*365&&(
+                <div style={{fontSize:"11px",color:C.yellow,marginTop:"5px"}}>⚠ That date is more than a year away from today — check the year.</div>
+              )}
             </>}
             <label style={S.lbl}>Notes</label>
             <input style={S.inp} placeholder="Details about the job..." value={leadForm.notes} onChange={e=>setLeadForm(f=>({...f,notes:e.target.value}))}/>
