@@ -620,7 +620,7 @@ RULES
 - tags: zero or more of: ${ctx.tags.join(", ")}
 - paymentMethod must be exactly one of: ${ctx.payMethods.join(", ")}
 - Leave a field as "" rather than guessing. A blank field is fine; a wrong one costs him money.
-- Set confidence "low" when you had to guess an amount, a name, or a date, or when the audio clearly garbled something. Anything low is unticked for him to check.
+- Set confidence "low" whenever you are less than certain: a guessed amount, a name you had to correct, an inferred date, garbled audio, or a category that was a judgement call. Anything low arrives unticked for him to check, so over-flagging costs him a glance and under-flagging costs him money. When in doubt, mark it low.
 - Match names against people he already knows where the transcript is close: customers ${ctx.customers}. Payees he has used: ${ctx.payees}. Use his existing spelling.
 
 Reply in one plain sentence. Mention anything you could not work out. Do not list back what you extracted -- he can see it.`;
@@ -636,10 +636,13 @@ async function askAssistant(transcript, ctx){
     headers:{"Content-Type":"application/json","x-api-key":key,
              "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({
-      model:"claude-opus-5",
-      max_tokens:4000,
+      // Haiku 4.5: cheap enough to use without thinking about it. It accepts
+      // structured outputs but rejects output_config.effort, so there is no
+      // effort hint here -- adding one 400s every request.
+      model:"claude-haiku-4-5",
+      max_tokens:2000,
       system:assistSystemPrompt(ctx),
-      output_config:{ effort:"low", format:{ type:"json_schema", schema:ASSIST_SCHEMA } },
+      output_config:{ format:{ type:"json_schema", schema:ASSIST_SCHEMA } },
       messages:[{role:"user",content:transcript}]
     })
   });
