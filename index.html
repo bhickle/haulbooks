@@ -408,6 +408,8 @@ const toTrip = r => ({id:r.id,date:r.date,desc:r.description,startOdometer:r.sta
 const fromTrip = t => ({id:t.id,date:t.date,description:t.desc,start_odometer:t.startOdometer||null,end_odometer:t.endOdometer||null,miles:t.miles,purpose:t.purpose||"Business",notes:t.notes||null});
 const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||"",scheduledTime:r.scheduled_time||""});
 const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null,scheduled_time:l.scheduledTime||""});
+const toReminder = r => ({id:r.id,text:r.text,dueDate:r.due_date||"",done:!!r.done});
+const fromReminder = m => ({id:m.id,text:m.text,due_date:m.dueDate||null,done:!!m.done});
 const toBiz = r => ({name:r.name||"",tagline:r.tagline||"",phone:r.phone||"",email:r.email||"",address:r.address||"",footerNote:r.footer_note||""});
 const fromBiz = b => ({id:1,name:b.name||"",tagline:b.tagline||"",phone:b.phone||"",email:b.email||"",address:b.address||"",footer_note:b.footerNote||""});
 const fromLedger = r => ({fingerprint:r.fingerprint,card:r.card||null,txn_date:r.date,post_date:r.postDate||null,description:r.desc,amount:r.amount,txn_type:r.type||null,decision:r.decision,skip_reason:r.skipReason||null,expense_id:r.expenseId||null});
@@ -565,6 +567,101 @@ function buildReceiptPdf(JsPDF, job, biz){
   return doc;
 }
 
+// ============================================================
+//  VOICE ASSISTANT
+//  Speech -> transcript -> Claude turns it into proposed records.
+//  Nothing is ever written without confirmation: the duplicate
+//  expenses earlier in this project came from skipping review.
+// ============================================================
+
+// Every field is a string ("" means absent) so the schema stays inside the
+// subset structured outputs accepts -- no type unions, no numeric constraints.
+const ASSIST_FIELDS = ["date","amount","customer","payee","category","jobType",
+  "paymentMethod","phone","address","scheduledDate","scheduledTime","dueDate","text","notes"];
+
+const ASSIST_SCHEMA = {
+  type:"object",
+  properties:{
+    actions:{type:"array", items:{
+      type:"object",
+      properties:Object.assign({
+        kind:{type:"string", enum:["expense","job","lead","reminder"]},
+        confidence:{type:"string", enum:["high","low"]},
+        summary:{type:"string", description:"One short line describing this record, for the confirmation list."},
+        tags:{type:"array", items:{type:"string"}}
+      }, ASSIST_FIELDS.reduce((o,f)=>{o[f]={type:"string"};return o;},{})),
+      required:["kind","confidence","summary","tags"].concat(ASSIST_FIELDS),
+      additionalProperties:false
+    }},
+    reply:{type:"string", description:"One sentence back to the user. Say what you could not work out, if anything."}
+  },
+  required:["actions","reply"],
+  additionalProperties:false
+};
+
+const assistSystemPrompt = (ctx) => `You turn a hauling contractor's spoken notes into records for his bookkeeping app. He is talking while driving, so the transcript will be informal and may have speech-to-text errors.
+
+Today is ${ctx.today} (${ctx.weekday}).
+
+Emit one action per thing he mentions. He often says several in one breath.
+
+KINDS
+- "expense" - money out. Includes paying a helper: use category "Contract Labor" and put the helper's name in payee.
+- "job" - completed work he was paid for. Needs customer and amount.
+- "lead" - someone who called wanting a quote, or work to be booked. Set scheduledDate/scheduledTime if he gave a day or time; leave blank if not.
+- "reminder" - something to chase later that is not itself a job (call someone back, send an invoice, order a part). Put the wording in "text" and a due date in "dueDate" if he gave one.
+
+RULES
+- Dates: resolve "today", "yesterday", "Tuesday", "the 14th" against today's date. Output YYYY-MM-DD. Default to today when he does not say.
+- Times: 24-hour HH:MM. "Half eleven" is 11:30. Leave blank if he did not say one.
+- amount: digits only, no currency symbol. "Two fifty" is 250 for a job, but use judgement -- a dump fee of "two fifty" is more likely 2.50 only if that is plausible; prefer the larger reading for jobs and the smaller for small fees.
+- category must be exactly one of: ${ctx.cats.join(", ")}
+- jobType must be exactly one of: ${ctx.jobTypes.join(", ")}
+- tags: zero or more of: ${ctx.tags.join(", ")}
+- paymentMethod must be exactly one of: ${ctx.payMethods.join(", ")}
+- Leave a field as "" rather than guessing. A blank field is fine; a wrong one costs him money.
+- Set confidence "low" when you had to guess an amount, a name, or a date, or when the audio clearly garbled something. Anything low is unticked for him to check.
+- Match names against people he already knows where the transcript is close: customers ${ctx.customers}. Payees he has used: ${ctx.payees}. Use his existing spelling.
+
+Reply in one plain sentence. Mention anything you could not work out. Do not list back what you extracted -- he can see it.`;
+
+// Sends the transcript to Claude and returns {actions, reply}.
+// Raw fetch rather than the SDK: the deployed app is one HTML file with no
+// build step, and this matches how receipt scanning already calls the API.
+async function askAssistant(transcript, ctx){
+  const key = localStorage.getItem("hb_anthropic_key") || "";
+  if(!key) throw new Error("Add your Anthropic API key under Settings first.");
+  const resp = await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","x-api-key":key,
+             "anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({
+      model:"claude-opus-5",
+      max_tokens:4000,
+      system:assistSystemPrompt(ctx),
+      output_config:{ effort:"low", format:{ type:"json_schema", schema:ASSIST_SCHEMA } },
+      messages:[{role:"user",content:transcript}]
+    })
+  });
+  if(!resp.ok){
+    let detail="";
+    try{ const e=await resp.json(); detail=e.error&&e.error.message?e.error.message:""; }catch(_){}
+    throw new Error(detail||("Claude returned "+resp.status));
+  }
+  const data = await resp.json();
+  if(data.stop_reason==="refusal") throw new Error("Claude declined that one. Try rewording it.");
+  const block = (data.content||[]).find(b=>b.type==="text");
+  if(!block) throw new Error("No answer came back. Try again.");
+  return JSON.parse(block.text);
+}
+
+const ASSIST_KIND = {
+  expense:  {label:"Expense",  icon:"\uD83E\uDDFE", color:"#58a6ff"},
+  job:      {label:"Job",      icon:"\uD83D\uDE9B", color:"#3fb950"},
+  lead:     {label:"Lead",     icon:"\uD83D\uDCCB", color:"#e8a33a"},
+  reminder: {label:"Reminder", icon:"\u23F0", color:"#bc8cff"}
+};
+
 const StartTripModal = ({onStart, onCancel, lastTripEndOdo, S, C}) => {
   const [startOdo, setStartOdo] = useState(lastTripEndOdo||"");
   const [startPurpose, setStartPurpose] = useState("Business");
@@ -625,6 +722,17 @@ function App() {
   };
   const [viewingJob, setViewingJob] = useState(null);
   const [viewingLead, setViewingLead] = useState(null);
+  // -- voice assistant --
+  const [reminders, setReminders] = useState([]);
+  const [assistOpen, setAssistOpen] = useState(false);
+  const [assistText, setAssistText] = useState("");
+  const [assistHeard, setAssistHeard] = useState("");   // live interim speech
+  const [assistListening, setAssistListening] = useState(false);
+  const [assistBusy, setAssistBusy] = useState(false);
+  const [assistErr, setAssistErr] = useState("");
+  const [assistReply, setAssistReply] = useState("");
+  const [assistActions, setAssistActions] = useState(null);  // null = not asked yet
+  const recogRef = React.useRef(null);
   const [schedView, setSchedView] = useState("list");   // list | calendar
   const [calMonth, setCalMonth] = useState("");         // YYYY-MM, empty = current
   const [editingId, setEditingId] = useState(null);
@@ -710,7 +818,7 @@ function App() {
     const load = async () => {
       try {
         const safe = (p) => p.catch(()=>[]);
-        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows,ledgerRows,bizRows] = await Promise.all([
+        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows,ledgerRows,bizRows,remRows] = await Promise.all([
           safe(sb.select("expenses","select=id,date,description,category,type,flip_id,property_id,amount,payee,notes,receipt_media_type,receipt_is_pdf,receipt_file_name&order=date.desc")),
           safe(sb.select("income","order=date.desc")),
           safe(sb.select("assets","order=date.desc")),
@@ -721,6 +829,7 @@ function App() {
           // is no duplicate protection, and the import screen has to say so.
           sb.select("imported_txns","select=fingerprint").catch(e=>{console.error("Import history unreadable:",e);setLedgerOk(false);return [];}),
           safe(sb.select("business_profile","id=eq.1")),
+          safe(sb.select("reminders","done=is.false&order=due_date.asc")),
         ]);
         setExpenses(expRows.map(toExpense));
         setIncome(incRows.map(toIncome));
@@ -730,6 +839,7 @@ function App() {
         setLeads(leadRows.map(toLead));
         setLedger(new Set(ledgerRows.map(r=>r.fingerprint)));
         if(bizRows&&bizRows[0]) setBiz(toBiz(bizRows[0]));
+        setReminders((remRows||[]).map(toReminder));
       } catch(err) {
         setDbError(err.message);
       } finally {
@@ -942,6 +1052,112 @@ function App() {
     setImportState("done");
   };
   const closeImport=()=>{setModal(null);setImportState("idle");setImportRows([]);setImportErr("");setImportResult(null);setImportFile("");};
+
+  // Web Speech API. Chrome and Safari have it; Firefox does not -- the modal
+  // always offers a text box too, which is also what he needs in a loud cab.
+  const speechOK = typeof window!=="undefined" && !!(window.SpeechRecognition||window.webkitSpeechRecognition);
+
+  const stopListening=()=>{ try{ recogRef.current && recogRef.current.stop(); }catch(e){} setAssistListening(false); };
+
+  const startListening=()=>{
+    const Rec = window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!Rec){ setAssistErr("This browser can't listen. Type it instead."); return; }
+    setAssistErr(""); setAssistHeard("");
+    const r = new Rec();
+    r.continuous=true; r.interimResults=true; r.lang="en-US";
+    r.onresult=(ev)=>{
+      let done="", interim="";
+      for(let i=ev.resultIndex;i<ev.results.length;i++){
+        const t=ev.results[i][0].transcript;
+        if(ev.results[i].isFinal) done+=t; else interim+=t;
+      }
+      if(done) setAssistText(prev=>(prev?prev+" ":"")+done.trim());
+      setAssistHeard(interim);
+    };
+    r.onerror=(ev)=>{
+      setAssistListening(false);
+      if(ev.error==="not-allowed") setAssistErr("Microphone blocked. Allow it in your browser settings, or type it instead.");
+      else if(ev.error!=="aborted"&&ev.error!=="no-speech") setAssistErr("Microphone error: "+ev.error);
+    };
+    r.onend=()=>{ setAssistListening(false); setAssistHeard(""); };
+    recogRef.current=r;
+    try{ r.start(); setAssistListening(true); }
+    catch(e){ setAssistErr("Could not start the microphone."); }
+  };
+
+  const runAssistant=async()=>{
+    const said=(assistText+" "+assistHeard).trim();
+    if(!said){ setAssistErr("Nothing to send yet."); return; }
+    stopListening();
+    setAssistBusy(true); setAssistErr(""); setAssistActions(null); setAssistReply("");
+    try{
+      const now=new Date();
+      const recent=[...new Set(haulingIncome.slice(0,40).map(j=>j.customer).concat(leads.map(l=>l.customer)).filter(Boolean))];
+      const out=await askAssistant(said,{
+        today:tod(),
+        weekday:now.toLocaleDateString("en-US",{weekday:"long"}),
+        cats:BUSINESS_CATS, jobTypes:HAULING_TYPES, tags:JOB_TAGS, payMethods:PAY_METHODS,
+        customers:recent.slice(0,40).join(", ")||"none yet",
+        payees:vendors.slice(0,40).join(", ")||"none yet"
+      });
+      const acts=(out.actions||[]).map((a,i)=>({...a,_id:i,_keep:a.confidence!=="low"}));
+      setAssistActions(acts); setAssistReply(out.reply||"");
+      if(!acts.length&&!out.reply) setAssistErr("Couldn't find anything to record in that.");
+    }catch(err){ console.error("Assistant:",err); setAssistErr(err.message||"Something went wrong."); }
+    finally{ setAssistBusy(false); }
+  };
+
+  const saveAssistant=async()=>{
+    const picked=(assistActions||[]).filter(a=>a._keep);
+    if(!picked.length) return;
+    setAssistBusy(true);
+    const num=(v)=>{const n=parseFloat(String(v).replace(/[^0-9.\-]/g,""));return isNaN(n)?0:n;};
+    const stamp=()=>String(Date.now())+Math.random().toString(36).slice(2,6);
+    try{
+      for(const a of picked){
+        if(a.kind==="expense"){
+          const rec={id:"exp_"+stamp(),date:a.date||tod(),desc:a.notes||a.summary||"",
+            category:a.category||"Other Business",type:"business",amount:num(a.amount),
+            payee:a.payee||"",notes:a.notes||""};
+          await sb.upsert("expenses",fromExpense(rec));
+          setExpenses(p=>[rec,...p]);
+          if(rec.payee) addVendor(rec.payee);
+        } else if(a.kind==="job"){
+          const rec={id:"inc_"+stamp(),date:a.date||tod(),customer:a.customer||"Customer",
+            jobType:a.jobType||"Junk Removal",propertyId:null,amount:num(a.amount),
+            paymentMethod:a.paymentMethod||"Cash",phone:a.phone||"",address:a.address||"",
+            notes:a.notes||"",tags:a.tags||[]};
+          await sb.upsert("income",fromIncome(rec));
+          setIncome(p=>[rec,...p]);
+        } else if(a.kind==="lead"){
+          const rec={id:"lead_"+stamp(),date:a.date||tod(),customer:a.customer||"Lead",
+            phone:a.phone||"",address:a.address||"",jobType:a.jobType||"",
+            estimatedAmount:a.amount?num(a.amount):null,
+            status:a.scheduledDate?"scheduled":"new",notes:a.notes||"",
+            scheduledDate:a.scheduledDate||"",scheduledTime:a.scheduledTime||""};
+          await sb.upsert("leads",fromLead(rec));
+          setLeads(p=>[rec,...p]);
+        } else if(a.kind==="reminder"){
+          const rec={id:"rem_"+stamp(),text:a.text||a.summary||"",dueDate:a.dueDate||"",done:false};
+          await sb.upsert("reminders",fromReminder(rec));
+          setReminders(p=>[...p,rec].sort((x,y)=>(x.dueDate||"9999").localeCompare(y.dueDate||"9999")));
+        }
+      }
+      setAssistOpen(false); setAssistActions(null); setAssistText(""); setAssistHeard(""); setAssistReply("");
+    }catch(err){ console.error("Assistant save:",err); setAssistErr("Saved some but hit an error: "+(err.message||"unknown")); }
+    finally{ setAssistBusy(false); }
+  };
+
+  const completeReminder=async(id)=>{
+    setReminders(p=>p.filter(r=>r.id!==id));
+    try{ await sb.update("reminders",id,{done:true}); }
+    catch(err){ console.error("Reminder:",err); }
+  };
+
+  const openAssistant=()=>{
+    setAssistOpen(true); setAssistText(""); setAssistHeard(""); setAssistErr("");
+    setAssistActions(null); setAssistReply("");
+  };
 
   const saveBiz=async()=>{
     if(!bizForm)return;
@@ -1216,6 +1432,7 @@ function App() {
           ))}
         </nav>
         <div style={{display:"flex",gap:"6px",justifyContent:"flex-end",alignItems:"center"}}>
+          <button style={{...S.btn,flex:"none",padding:"6px 14px",fontSize:"12px",background:C.purple}} onClick={openAssistant}>🎤 Assistant</button>
           <button style={{...S.bgh,flex:"none",padding:"6px 12px",fontSize:"12px"}} onClick={()=>{setGlobalQuery("");setGlobalSearch(true);}}>🔍</button>
           <button style={{...S.btn,flex:"none",padding:"6px 12px",fontSize:"10px",background:C.muted+"44",color:C.muted,border:`1px solid ${C.border}`}} onClick={()=>setView("settings")}>⚙</button>
         </div>
@@ -1254,7 +1471,39 @@ function App() {
             return <span style={{fontSize:"10px",fontWeight:"700",color:up?C.teal:C.red,marginLeft:"6px"}}>{up?"▲":"▼"}{Math.abs(pct)}% vs last mo</span>;
           };
 
+          const dueReminders = reminders.filter(r=>!r.done)
+            .sort((a,b)=>(a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+
           return (<>
+            {dueReminders.length>0&&(
+              <div style={{...S.card,marginBottom:"16px",borderLeft:"3px solid "+C.purple}}>
+                <div style={{fontSize:"11px",fontWeight:"700",color:C.purple,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:"10px"}}>
+                  Follow Up
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:"7px"}}>
+                  {dueReminders.map(r=>{
+                    const overdue=r.dueDate&&r.dueDate<tod();
+                    const today=r.dueDate===tod();
+                    return (
+                      <div key={r.id} style={{display:"flex",gap:"10px",alignItems:"flex-start"}}>
+                        <button onClick={()=>completeReminder(r.id)}
+                          style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:"16px",padding:"0",lineHeight:1.2}}>
+                          {"\u2610"}
+                        </button>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:"13px",lineHeight:1.5}}>{r.text}</div>
+                          {r.dueDate&&(
+                            <div style={{fontSize:"11px",marginTop:"1px",color:overdue?C.red:today?C.orange:C.muted,fontWeight:overdue||today?"700":"400"}}>
+                              {overdue?"Overdue \u00b7 ":today?"Today \u00b7 ":""}{fmtDate(r.dueDate)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {/* -- Quick New button row -- */}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px",flexWrap:"wrap",gap:"10px"}}>
               <div>
@@ -2360,6 +2609,10 @@ function App() {
                 onClick={()=>{setExpForm(blankExp);setReceiptState("idle");setReceiptData(null);setReceiptMode("scan");setExpModalContext(null);setEditingId(null);setModal("expense");}}>
                 <span style={{fontSize:"22px"}}>🧾</span><div><div>Expense</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Fuel, dump fees, supplies, etc.</div></div>
               </button>
+              <button style={{...S.btn,background:C.purple,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
+                onClick={()=>{setQuickNew(false);openAssistant();}}>
+                <span style={{fontSize:"22px"}}>🎤</span><div><div>Just Tell It</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Say what happened, it fills the forms</div></div>
+              </button>
               <button style={{...S.btn,background:C.yellow,padding:"14px",fontSize:"14px",borderRadius:"10px",textAlign:"left",display:"flex",alignItems:"center",gap:"12px"}}
                 onClick={()=>{setLeadForm({...blankLead,date:tod()});setEditingId(null);setModal("lead");}}>
                 <span style={{fontSize:"22px"}}>📋</span><div><div>Lead</div><div style={{fontSize:"11px",fontWeight:"400",opacity:0.8}}>Someone called for a quote</div></div>
@@ -2476,6 +2729,98 @@ function App() {
           </div>
         </div>
       );})()}
+
+      {/* -- VOICE ASSISTANT -- */}
+      {assistOpen&&(
+        <div style={S.modal} onClick={ev=>ev.target===ev.currentTarget&&!assistBusy&&(stopListening(),setAssistOpen(false))}>
+          <div style={{...S.mbox,maxWidth:"520px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}}>
+              <div style={S.mt}>Just Tell It</div>
+              <button onClick={()=>{stopListening();setAssistOpen(false);}} style={S.xBtn}>{"\u00d7"}</button>
+            </div>
+            <div style={{fontSize:"12px",color:C.muted,marginBottom:"14px",lineHeight:1.6}}>
+              Say what happened and it fills in the forms. Nothing saves until you tick it off.
+            </div>
+
+            {assistActions===null?(<>
+              <div style={{display:"flex",gap:"10px",alignItems:"stretch",marginBottom:"12px"}}>
+                {speechOK&&(
+                  <button onClick={assistListening?stopListening:startListening} disabled={assistBusy}
+                    style={{...S.btn,flex:"none",width:"84px",padding:"0",fontSize:"30px",
+                      background:assistListening?C.red:C.purple,borderRadius:"12px"}}>
+                    {assistListening?"\u25A0":"\uD83C\uDFA4"}
+                  </button>
+                )}
+                <textarea style={{...S.inp,flex:1,minHeight:"84px",margin:0,resize:"vertical"}}
+                  placeholder={speechOK?"Tap the mic and talk, or type it here":"Type what happened"}
+                  value={assistText+(assistHeard?(assistText?" ":"")+assistHeard:"")}
+                  onChange={e=>{setAssistText(e.target.value);setAssistHeard("");}}/>
+              </div>
+              {assistListening&&(
+                <div style={{fontSize:"12px",color:C.red,fontWeight:"700",marginBottom:"10px"}}>
+                  {"\u25CF"} Listening{assistHeard?' \u2014 "'+assistHeard+'"':"... tap the square when you're done"}
+                </div>
+              )}
+              <div style={{fontSize:"11px",color:C.muted,lineHeight:1.7,marginBottom:"14px"}}>
+                For example: <span style={{color:C.text}}>"Did Cathy Gallo's cleanout today, twelve hundred, paid by check. Dump fee was a hundred and four fifty. Paid Mike two hundred cash to help. Remind me to call Diane Thursday about the attic."</span>
+              </div>
+              <button style={{...S.btn,width:"100%",padding:"13px",background:C.purple}}
+                disabled={assistBusy||!(assistText+assistHeard).trim()} onClick={runAssistant}>
+                {assistBusy?"Working it out...":"Sort that out for me"}
+              </button>
+            </>):(<>
+              {assistReply&&(
+                <div style={{background:C.bg,borderRadius:"8px",padding:"12px",marginBottom:"12px",fontSize:"13px",lineHeight:1.6}}>
+                  {assistReply}
+                </div>
+              )}
+              {assistActions.length===0
+                ? <div style={{...S.card,textAlign:"center",color:C.muted,padding:"28px"}}>Nothing to record from that.</div>
+                : <div style={{display:"flex",flexDirection:"column",gap:"8px",maxHeight:"46vh",overflowY:"auto"}}>
+                    {assistActions.map(a=>{
+                      const k=ASSIST_KIND[a.kind]||ASSIST_KIND.expense;
+                      const bits=[];
+                      if(a.kind==="reminder"){ if(a.dueDate) bits.push(fmtDate(a.dueDate)); }
+                      else {
+                        if(a.date) bits.push(fmtDate(a.date));
+                        if(a.amount) bits.push(fmt(parseFloat(a.amount)||0));
+                        if(a.category) bits.push(a.category);
+                        if(a.jobType) bits.push(a.jobType);
+                        if(a.payee) bits.push("to "+a.payee);
+                        if(a.paymentMethod&&a.kind==="job") bits.push(a.paymentMethod);
+                        if(a.scheduledDate) bits.push(fmtDate(a.scheduledDate)+(a.scheduledTime?" "+fmtTime(a.scheduledTime):""));
+                      }
+                      return (
+                        <div key={a._id} onClick={()=>setAssistActions(list=>list.map(x=>x._id===a._id?{...x,_keep:!x._keep}:x))}
+                          style={{...S.card,padding:"12px",cursor:"pointer",display:"flex",gap:"10px",alignItems:"flex-start",
+                            borderLeft:"3px solid "+k.color, opacity:a._keep?1:0.45}}>
+                          <div style={{fontSize:"17px",lineHeight:1.2,paddingTop:"1px"}}>{a._keep?"\u2611":"\u2610"}</div>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{display:"flex",gap:"6px",alignItems:"center",flexWrap:"wrap",marginBottom:"3px"}}>
+                              <span style={S.badge(k.color)}>{k.icon} {k.label}</span>
+                              {a.confidence==="low"&&<span style={S.badge(C.yellow)}>CHECK THIS</span>}
+                            </div>
+                            <div style={{fontWeight:"700",fontSize:"13px"}}>{a.customer||a.text||a.summary}</div>
+                            {bits.length>0&&<div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>{bits.join("  \u00b7  ")}</div>}
+                            {(a.tags||[]).length>0&&<div style={{fontSize:"11px",color:C.blue,marginTop:"2px"}}>{a.tags.join(", ")}</div>}
+                            {a.notes&&<div style={{fontSize:"11px",color:C.muted,marginTop:"3px"}}>{a.notes}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>}
+              <div style={{...S.br,marginTop:"14px"}}>
+                <button style={{...S.btn,background:C.teal}} disabled={assistBusy||!assistActions.some(a=>a._keep)} onClick={saveAssistant}>
+                  {assistBusy?"Saving...":"Save "+assistActions.filter(a=>a._keep).length}
+                </button>
+                <button style={S.bgh} onClick={()=>{setAssistActions(null);setAssistErr("");}}>Back</button>
+              </div>
+            </>)}
+
+            {assistErr&&<div style={{marginTop:"12px",background:C.redD,border:"1px solid "+C.red+"55",borderRadius:"8px",padding:"10px 12px",fontSize:"12px",color:C.red}}>{assistErr}</div>}
+          </div>
+        </div>
+      )}
 
       {/* -- VIEW SCHEDULED WORK -- */}
       {modal==="viewLead"&&viewingLead&&(()=>{const l=viewingLead;
