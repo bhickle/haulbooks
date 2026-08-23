@@ -408,6 +408,22 @@ const toTrip = r => ({id:r.id,date:r.date,desc:r.description,startOdometer:r.sta
 const fromTrip = t => ({id:t.id,date:t.date,description:t.desc,start_odometer:t.startOdometer||null,end_odometer:t.endOdometer||null,miles:t.miles,purpose:t.purpose||"Business",notes:t.notes||null});
 const toLead = r => ({id:r.id,date:r.date,customer:r.customer,phone:r.phone||"",address:r.address||"",jobType:r.job_type||"",estimatedAmount:r.estimated_amount?parseFloat(r.estimated_amount):null,status:r.status||"new",notes:r.notes||"",scheduledDate:r.scheduled_date||"",scheduledTime:r.scheduled_time||""});
 const fromLead = l => ({id:l.id,date:l.date,customer:l.customer,phone:l.phone||null,address:l.address||null,job_type:l.jobType||null,estimated_amount:l.estimatedAmount||null,status:l.status,notes:l.notes||null,scheduled_date:l.scheduledDate||null,scheduled_time:l.scheduledTime||""});
+// Advance a monthly schedule. Clamps the day so a "31st" bill lands on the
+// 30th/28th rather than skipping February entirely.
+const nextDueFrom = (iso, everyMonths, dayOfMonth) => {
+  const d = new Date(iso + "T12:00:00");
+  d.setDate(1);
+  d.setMonth(d.getMonth() + (everyMonths || 1));
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(dayOfMonth || 1, lastDay));
+  return d.toISOString().slice(0, 10);
+};
+const toRecurring = r => ({id:r.id,kind:r.kind,label:r.label,category:r.category||"",
+  amount:r.amount==null?"":String(r.amount),dayOfMonth:r.day_of_month,everyMonths:r.every_months,
+  nextDue:r.next_due,active:!!r.active,notes:r.notes||""});
+const fromRecurring = x => ({id:x.id,kind:x.kind,label:x.label,category:x.category||"",
+  amount:x.amount===""?0:parseFloat(x.amount)||0,day_of_month:parseInt(x.dayOfMonth,10)||1,
+  every_months:parseInt(x.everyMonths,10)||1,next_due:x.nextDue,active:x.active!==false,notes:x.notes||""});
 const toCapture = r => ({id:r.id,kind:r.kind,data:r.data||{},transcript:r.transcript||"",
   summary:r.summary||"",confidence:r.confidence||"high",createdAt:r.created_at});
 const fromCapture = c => ({id:c.id,kind:c.kind,data:c.data||{},transcript:c.transcript||"",
@@ -748,6 +764,8 @@ function App() {
   // -- voice assistant --
   const [reminders, setReminders] = useState([]);
   const [captured, setCaptured] = useState([]);
+  const [recurring, setRecurring] = useState([]);
+  const [recDraft, setRecDraft] = useState(null);   // the one being added/edited
   const [remOpen, setRemOpen] = useState(null);    // id of the reminder being edited
   const [remDraft, setRemDraft] = useState(null);
   const [capOpen, setCapOpen] = useState(null);   // id of the capture being edited
@@ -847,7 +865,7 @@ function App() {
     const load = async () => {
       try {
         const safe = (p) => p.catch(()=>[]);
-        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows,ledgerRows,bizRows,remRows,capRows] = await Promise.all([
+        const [expRows,incRows,assetRows,tripRows,vendorRows,leadRows,ledgerRows,bizRows,remRows,capRows,recRows] = await Promise.all([
           safe(sb.select("expenses","select=id,date,description,category,type,flip_id,property_id,amount,payee,notes,receipt_media_type,receipt_is_pdf,receipt_file_name&order=date.desc")),
           safe(sb.select("income","order=date.desc")),
           safe(sb.select("assets","order=date.desc")),
@@ -860,6 +878,7 @@ function App() {
           safe(sb.select("business_profile","id=eq.1")),
           safe(sb.select("reminders","done=is.false&order=due_date.asc")),
           safe(sb.select("captured","status=eq.pending&order=created_at.desc")),
+          safe(sb.select("recurring","order=next_due.asc")),
         ]);
         setExpenses(expRows.map(toExpense));
         setIncome(incRows.map(toIncome));
@@ -871,6 +890,9 @@ function App() {
         if(bizRows&&bizRows[0]) setBiz(toBiz(bizRows[0]));
         setReminders((remRows||[]).map(toReminder));
         setCaptured((capRows||[]).map(toCapture));
+        const recs=(recRows||[]).map(toRecurring);
+        setRecurring(recs);
+        runRecurring(recs);
       } catch(err) {
         setDbError(err.message);
       } finally {
@@ -1160,6 +1182,63 @@ function App() {
       setView("home");
     }catch(err){ console.error("Capture:",err); setAssistErr("Couldn't save to the inbox: "+(err.message||"unknown")); }
     finally{ setAssistBusy(false); }
+  };
+
+  // Runs once on load. Anything due drops into the inbox (expenses) or straight
+  // into Follow Up (reminders) -- a reminder is already a review queue, so
+  // routing it through the inbox would just be an extra tap.
+  // Idempotent because next_due is advanced as each one fires.
+  const runRecurring=async(recs)=>{
+    const today=tod();
+    const due=(recs||[]).filter(r=>r.active&&r.nextDue&&r.nextDue<=today);
+    if(!due.length) return;
+    const newCaps=[], newRems=[];
+    for(const r of due){
+      // catch up if several periods elapsed, but never fire more than 12 times
+      let cursor=r.nextDue, fired=0;
+      while(cursor<=today&&fired<12){
+        const stamp=Date.now()+Math.floor(Math.random()*10000);
+        if(r.kind==="reminder"){
+          const rec={id:"rem_"+stamp,text:r.label,dueDate:cursor,done:false};
+          try{ await sb.upsert("reminders",fromReminder(rec)); newRems.push(rec); }
+          catch(err){ console.error("Recurring reminder:",err); }
+        } else {
+          const cap={id:"cap_"+stamp,kind:"expense",
+            data:{date:cursor,amount:r.amount?String(r.amount):"",category:r.category||"",
+                  payee:r.label,notes:r.notes||""},
+            transcript:"", summary:r.label+" (recurring)", confidence:"low"};
+          try{ await sb.upsert("captured",fromCapture(cap)); newCaps.push({...cap,createdAt:new Date().toISOString()}); }
+          catch(err){ console.error("Recurring expense:",err); }
+        }
+        cursor=nextDueFrom(cursor,r.everyMonths,r.dayOfMonth); fired++;
+      }
+      try{ await sb.update("recurring",r.id,{next_due:cursor,last_run:today}); }
+      catch(err){ console.error("Recurring advance:",err); }
+      r.nextDue=cursor;
+    }
+    if(newCaps.length) setCaptured(p=>[...newCaps,...p]);
+    if(newRems.length) setReminders(p=>[...p,...newRems].sort((a,b)=>(a.dueDate||"9999").localeCompare(b.dueDate||"9999")));
+    setRecurring(p=>p.map(x=>{const hit=due.find(d=>d.id===x.id); return hit?{...x,nextDue:hit.nextDue}:x;}));
+  };
+
+  const blankRecurring={id:"",kind:"expense",label:"",category:"Other Business",amount:"",
+    dayOfMonth:"1",everyMonths:"1",nextDue:tod(),active:true,notes:""};
+
+  const saveRecurring=async()=>{
+    if(!recDraft||!recDraft.label.trim()){ alert("Give it a name first."); return; }
+    const rec={...recDraft,id:recDraft.id||("rec_"+Date.now()),label:recDraft.label.trim()};
+    try{
+      await sb.upsert("recurring",fromRecurring(rec));
+      setRecurring(p=>{const rest=p.filter(x=>x.id!==rec.id);
+        return [...rest,rec].sort((a,b)=>(a.nextDue||"").localeCompare(b.nextDue||""));});
+      setRecDraft(null);
+    }catch(err){ console.error("Recurring save:",err); alert("Couldn't save: "+(err.message||"unknown")); }
+  };
+
+  const deleteRecurring=async(id)=>{
+    if(!window.confirm("Stop this recurring item? Anything already generated stays.")) return;
+    setRecurring(p=>p.filter(r=>r.id!==id)); setRecDraft(null);
+    try{ await sb.remove("recurring",id); }catch(err){ console.error("Recurring delete:",err); }
   };
 
   const openCapture=(c)=>{ setCapOpen(c.id); setCapDraft({...c.data, tags:c.data.tags||[]}); };
@@ -2648,6 +2727,104 @@ function App() {
                 </div>
               )}
               <div style={{fontSize:"11px",color:C.muted,marginTop:"8px"}}>Stored locally on this device only. Never sent to anyone except Anthropic.</div>
+            </div>
+
+            {/* -- RECURRING: bills that never touch a card statement -- */}
+            <div style={{...S.card,marginBottom:"16px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px",flexWrap:"wrap",gap:"8px"}}>
+                <div>
+                  <div style={{fontWeight:"700",fontSize:"13px"}}>{"\uD83D\uDD01"} Recurring</div>
+                  <div style={{fontSize:"11px",color:C.muted,marginTop:"2px"}}>
+                    Bills paid by bank draft never show on a card statement. These land in your inbox when due.
+                  </div>
+                </div>
+                {!recDraft&&<button style={{...S.bgh,flex:"none",padding:"5px 12px",fontSize:"11px",color:C.blue,borderColor:C.blue+"44"}}
+                  onClick={()=>setRecDraft({...blankRecurring})}>+ Add</button>}
+              </div>
+
+              {recurring.length===0&&!recDraft&&(
+                <div style={{fontSize:"12px",color:C.muted,padding:"8px 0"}}>Nothing set up yet.</div>
+              )}
+
+              <div style={{display:"flex",flexDirection:"column",gap:"7px",marginTop:"10px"}}>
+                {recurring.map(r=>{
+                  const every=r.everyMonths==1?"monthly":"every "+r.everyMonths+" months";
+                  return (
+                    <div key={r.id} onClick={()=>setRecDraft({...r,amount:String(r.amount||""),
+                        dayOfMonth:String(r.dayOfMonth),everyMonths:String(r.everyMonths)})}
+                      style={{background:C.bg,borderRadius:"8px",padding:"10px 12px",cursor:"pointer",
+                        display:"flex",justifyContent:"space-between",alignItems:"center",gap:"8px",
+                        borderLeft:"3px solid "+(r.kind==="reminder"?C.purple:C.blue),opacity:r.active?1:0.45}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:"13px",fontWeight:"700"}}>{r.label}</div>
+                        <div style={{fontSize:"11px",color:C.muted,marginTop:"1px"}}>
+                          {r.kind==="reminder"?"Reminder":(r.category||"Uncategorised")}
+                          {" \u00b7 "}{every}{" \u00b7 next "}{fmtDate(r.nextDue)}
+                          {!r.active&&" \u00b7 paused"}
+                        </div>
+                      </div>
+                      {r.kind!=="reminder"&&r.amount>0&&(
+                        <div style={{fontWeight:"700",fontSize:"13px",color:C.text}}>{fmt(r.amount)}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {recDraft&&(
+                <div style={{background:C.bg,borderRadius:"8px",padding:"14px",marginTop:"12px"}}>
+                  <div style={{display:"flex",gap:"5px",marginBottom:"12px"}}>
+                    {[["expense","Bill"],["reminder","Reminder"]].map(([k,lab])=>(
+                      <button key={k} style={{...S.tb(recDraft.kind===k,C.blue),flex:"none",padding:"6px 14px",fontSize:"11px"}}
+                        onClick={()=>setRecDraft(d=>({...d,kind:k}))}>{lab}</button>
+                    ))}
+                  </div>
+                  <label style={S.lbl}>{recDraft.kind==="reminder"?"Remind me to":"Paid To"}</label>
+                  <input style={S.inp} value={recDraft.label} autoFocus
+                    placeholder={recDraft.kind==="reminder"?"e.g. enter the truck loan statements":"e.g. State Farm"}
+                    onChange={e=>setRecDraft(d=>({...d,label:e.target.value}))}/>
+                  {recDraft.kind!=="reminder"&&(<>
+                    <div style={S.row}>
+                      <div style={{flex:1}}><label style={S.lbl}>Category</label>
+                        <select style={S.inp} value={recDraft.category} onChange={e=>setRecDraft(d=>({...d,category:e.target.value}))}>
+                          {BUSINESS_CATS.map(c=><option key={c} value={c}>{c}</option>)}
+                        </select></div>
+                      <div style={{flex:1}}><label style={S.lbl}>Usual Amount</label>
+                        <input style={S.inp} type="number" step="0.01" value={recDraft.amount}
+                          onChange={e=>setRecDraft(d=>({...d,amount:e.target.value}))}/></div>
+                    </div>
+                    <div style={{fontSize:"11px",color:C.muted,marginTop:"-6px",marginBottom:"10px"}}>
+                      Proposed each time, not booked automatically {"\u2014"} confirm the real amount in the inbox.
+                    </div>
+                  </>)}
+                  <div style={S.row}>
+                    <div style={{flex:1}}><label style={S.lbl}>Day of month</label>
+                      <input style={S.inp} type="number" min="1" max="31" value={recDraft.dayOfMonth}
+                        onChange={e=>setRecDraft(d=>({...d,dayOfMonth:e.target.value}))}/></div>
+                    <div style={{flex:1}}><label style={S.lbl}>How often</label>
+                      <select style={S.inp} value={recDraft.everyMonths} onChange={e=>setRecDraft(d=>({...d,everyMonths:e.target.value}))}>
+                        {[["1","Every month"],["2","Every 2 months"],["3","Every 3 months"],
+                          ["6","Every 6 months"],["12","Once a year"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                      </select></div>
+                  </div>
+                  <label style={S.lbl}>Next due</label>
+                  <input style={S.inp} type="date" value={recDraft.nextDue}
+                    onChange={e=>setRecDraft(d=>({...d,nextDue:e.target.value}))}/>
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"12px"}}>
+                    <button onClick={()=>setRecDraft(d=>({...d,active:!d.active}))}
+                      style={{background:"none",border:"none",color:recDraft.active?C.teal:C.muted,cursor:"pointer",fontSize:"15px",padding:0}}>
+                      {recDraft.active?"\u2611":"\u2610"}
+                    </button>
+                    <span style={{fontSize:"12px",color:C.muted}}>Active</span>
+                  </div>
+                  <div style={S.br}>
+                    <button style={{...S.btn,background:C.teal}} onClick={saveRecurring}>Save</button>
+                    {recDraft.id&&<button style={{...S.btn,background:C.red,flex:"none",padding:"10px 14px"}}
+                      onClick={()=>deleteRecurring(recDraft.id)}>Delete</button>}
+                    <button style={S.bgh} onClick={()=>setRecDraft(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* -- BUSINESS DETAILS (used on customer receipts) -- */}
